@@ -8,6 +8,13 @@ export interface Agent {
 
 export const agents: Agent[] = [
   {
+    id: 'orchestrator',
+    name: 'Orchestrator Agent',
+    description: 'Coordinates user requests, selects the right specialized tool agents, manages session memory, and synthesizes the final response.',
+    capabilities: ['Task routing', 'Session memory', 'Streaming coordination'],
+    icon: '🧠'
+  },
+  {
     id: 'getweather',
     name: 'Weather Agent',
     description: 'Provides current weather information and forecasts for any location. Can get real-time data from weather APIs and present it in a user-friendly format.',

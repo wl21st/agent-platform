@@ -7,53 +7,55 @@ interface Job {
   name: string;
   status: 'running' | 'completed' | 'failed' | 'pending';
   progress: number;
-  startTime: Date;
+  startTimeLabel: string;
   description: string;
   agent?: string;
 }
+
+const INITIAL_JOBS: Job[] = [
+  {
+    id: '1',
+    name: 'Weather Data Fetch',
+    status: 'running',
+    progress: 65,
+    startTimeLabel: '5 minutes ago',
+    description: 'Fetching weather data for multiple locations',
+    agent: 'Weather Agent'
+  },
+  {
+    id: '2',
+    name: 'Translation Task',
+    status: 'completed',
+    progress: 100,
+    startTimeLabel: '10 minutes ago',
+    description: 'Translating documents from English to Spanish',
+    agent: 'Translation Agent'
+  },
+  {
+    id: '3',
+    name: 'Data Analysis',
+    status: 'failed',
+    progress: 30,
+    startTimeLabel: '15 minutes ago',
+    description: 'Analyzing sales data and generating reports',
+    agent: 'Search Agent'
+  },
+  {
+    id: '4',
+    name: 'Schedule Optimization',
+    status: 'pending',
+    progress: 0,
+    startTimeLabel: '20 minutes ago',
+    description: 'Optimizing appointment schedules',
+    agent: 'Scheduler Agent'
+  }
+];
 
 export default function JobsInterface() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [agentFilter, setAgentFilter] = useState<string>('all');
 
-  const [jobs] = useState<Job[]>([
-    {
-      id: '1',
-      name: 'Weather Data Fetch',
-      status: 'running',
-      progress: 65,
-      startTime: new Date(Date.now() - 300000), // 5 minutes ago
-      description: 'Fetching weather data for multiple locations',
-      agent: 'Weather Agent'
-    },
-    {
-      id: '2',
-      name: 'Translation Task',
-      status: 'completed',
-      progress: 100,
-      startTime: new Date(Date.now() - 600000), // 10 minutes ago
-      description: 'Translating documents from English to Spanish',
-      agent: 'Translation Agent'
-    },
-    {
-      id: '3',
-      name: 'Data Analysis',
-      status: 'failed',
-      progress: 30,
-      startTime: new Date(Date.now() - 900000), // 15 minutes ago
-      description: 'Analyzing sales data and generating reports',
-      agent: 'Search Agent'
-    },
-    {
-      id: '4',
-      name: 'Schedule Optimization',
-      status: 'pending',
-      progress: 0,
-      startTime: new Date(Date.now() - 1200000), // 20 minutes ago
-      description: 'Optimizing appointment schedules',
-      agent: 'Scheduler Agent'
-    }
-  ]);
+  const [jobs] = useState<Job[]>(INITIAL_JOBS);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -170,7 +172,7 @@ export default function JobsInterface() {
                 </div>
 
                 <div className="mt-4 text-sm text-gray-500 dark:text-gray-400">
-                  Started: {job.startTime.toLocaleString()}
+                  Started: {job.startTimeLabel}
                 </div>
               </div>
             ))

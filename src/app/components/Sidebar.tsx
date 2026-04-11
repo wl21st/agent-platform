@@ -1,7 +1,5 @@
 'use client';
 
-import { useState } from 'react';
-
 type View = 'agents' | 'chat' | 'jobs';
 
 interface SidebarProps {

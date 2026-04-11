@@ -1,32 +1,29 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { agents } from '../data/agents';
+
+import {
+  ORCHESTRATOR_AGENT,
+  createId,
+  createInitialMessages,
+  type ChatMessage,
+  type SessionSnapshot,
+  type StreamEvent,
+  type TaskStatus,
+} from '@/lib/agent-chat';
 
 interface DropdownMenuProps {
   onStartNewConversation: () => void;
   onClearHistory: () => void;
+  onReloadHistory: () => void;
 }
 
-interface Message {
-  id: string;
-  text: string;
-  isUser: boolean;
-  timestamp: Date;
-  agent?: {
-    name: string;
-    icon: string;
-  };
-}
-
-interface Task {
-  id: string;
-  description: string;
-  completed: boolean;
-}
-
-function DropdownMenu({ onStartNewConversation, onClearHistory }: DropdownMenuProps) {
+function DropdownMenu({
+  onStartNewConversation,
+  onClearHistory,
+  onReloadHistory,
+}: DropdownMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -38,45 +35,51 @@ function DropdownMenu({ onStartNewConversation, onClearHistory }: DropdownMenuPr
     };
 
     document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   return (
     <div className="relative" ref={dropdownRef}>
       <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="p-2 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+        onClick={() => setIsOpen((current) => !current)}
+        className="rounded p-2 hover:bg-gray-200 dark:hover:bg-gray-700"
         title="Chat options"
+        type="button"
       >
         ⋮
       </button>
+
       {isOpen && (
-        <div className="absolute right-0 mt-1 w-48 bg-white dark:bg-gray-800 rounded-md shadow-lg border border-gray-200 dark:border-gray-700 z-10">
+        <div className="absolute right-0 z-10 mt-1 w-52 rounded-md border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
           <button
             onClick={() => {
               onStartNewConversation();
               setIsOpen(false);
             }}
-            className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-t-md"
+            className="w-full rounded-t-md px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+            type="button"
           >
             Start New Conversation
+          </button>
+          <button
+            onClick={() => {
+              onReloadHistory();
+              setIsOpen(false);
+            }}
+            className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+            type="button"
+          >
+            Reload Session History
           </button>
           <button
             onClick={() => {
               onClearHistory();
               setIsOpen(false);
             }}
-            className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+            className="w-full rounded-b-md px-4 py-2 text-left text-sm text-red-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+            type="button"
           >
             Clear History
-          </button>
-          <button
-            onClick={() => setIsOpen(false)}
-            className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 rounded-b-md"
-          >
-            View History
           </button>
         </div>
       )}
@@ -84,184 +87,382 @@ function DropdownMenu({ onStartNewConversation, onClearHistory }: DropdownMenuPr
   );
 }
 
+function createSessionId() {
+  return crypto.randomUUID();
+}
+
+function getTaskClasses(status: TaskStatus['status']) {
+  switch (status) {
+    case 'running':
+      return 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-200';
+    case 'completed':
+      return 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-200';
+    case 'failed':
+      return 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-200';
+    default:
+      return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
+  }
+}
+
 export default function ChatInterface() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: '1',
-      text: 'Hello! I\'m here to help you with various tasks. What would you like to do?',
-      isUser: false,
-      timestamp: new Date()
-    }
-  ]);
+  const [sessionId, setSessionId] = useState('');
+  const [messages, setMessages] = useState<ChatMessage[]>(createInitialMessages());
+  const [tasks, setTasks] = useState<TaskStatus[]>([]);
   const [inputValue, setInputValue] = useState('');
-  const [tasks, setTasks] = useState<Task[]>([
-    { id: '1', description: 'Get weather for New York', completed: false },
-    { id: '2', description: 'Calculate 15 * 23', completed: true },
-    { id: '3', description: 'Translate "Hello" to Spanish', completed: false }
-  ]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, scrollToBottom]);
 
-  const handleSendMessage = () => {
-    if (!inputValue.trim()) return;
+  const loadSession = useCallback(async (nextSessionId: string) => {
+    const response = await fetch(`/api/session/${nextSessionId}`);
+    if (!response.ok) {
+      throw new Error('Unable to load session state.');
+    }
 
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      text: inputValue,
-      isUser: true,
-      timestamp: new Date()
+    const snapshot = (await response.json()) as SessionSnapshot;
+    setMessages(snapshot.history.length > 0 ? snapshot.history : createInitialMessages());
+    setTasks([]);
+  }, []);
+
+  useEffect(() => {
+    const storedSessionId = window.localStorage.getItem('agents-platform-session-id') || createSessionId();
+    window.localStorage.setItem('agents-platform-session-id', storedSessionId);
+    setSessionId(storedSessionId);
+
+    loadSession(storedSessionId).catch(() => {
+      setMessages(createInitialMessages());
+    });
+  }, [loadSession]);
+
+  const persistSession = useCallback((nextSessionId: string) => {
+    setSessionId(nextSessionId);
+    window.localStorage.setItem('agents-platform-session-id', nextSessionId);
+  }, []);
+
+  const resetConversation = useCallback((nextSessionId?: string) => {
+    const session = nextSessionId || createSessionId();
+    persistSession(session);
+    setMessages(createInitialMessages());
+    setTasks([]);
+    setInputValue('');
+    setConnectionError(null);
+  }, [persistSession]);
+
+  const handleReloadHistory = useCallback(() => {
+    if (!sessionId) {
+      return;
+    }
+
+    loadSession(sessionId).catch((error: unknown) => {
+      setConnectionError(error instanceof Error ? error.message : 'Unable to reload session history.');
+    });
+  }, [loadSession, sessionId]);
+
+  const handleClearHistory = useCallback(async () => {
+    if (sessionId) {
+      await fetch(`/api/session/${sessionId}`, { method: 'DELETE' });
+    }
+
+    resetConversation();
+  }, [resetConversation, sessionId]);
+
+  const handleStartNewConversation = useCallback(() => {
+    resetConversation();
+  }, [resetConversation]);
+
+  const activeTaskCount = useMemo(
+    () => tasks.filter((task) => task.status === 'running' || task.status === 'pending').length,
+    [tasks]
+  );
+
+  const handleStreamEvent = useCallback((event: StreamEvent, assistantMessageId: string) => {
+    if (event.type === 'session') {
+      persistSession(event.sessionId);
+      return;
+    }
+
+    if (event.type === 'tasks') {
+      setTasks(event.tasks);
+      return;
+    }
+
+    if (event.type === 'message') {
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantMessageId
+            ? {
+                ...message,
+                content: `${message.content}${event.delta}`,
+                agent: event.agent ?? message.agent,
+                status: 'streaming',
+              }
+            : message
+        )
+      );
+      return;
+    }
+
+    if (event.type === 'done') {
+      setTasks(event.tasks);
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantMessageId
+            ? {
+                ...event.message,
+                id: assistantMessageId,
+                status: 'done',
+              }
+            : message
+        )
+      );
+      return;
+    }
+
+    setConnectionError(event.message);
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === assistantMessageId
+          ? {
+              ...message,
+              content: event.message,
+              status: 'error',
+              agent: ORCHESTRATOR_AGENT,
+            }
+          : message
+      )
+    );
+  }, [persistSession]);
+
+  const handleSendMessage = useCallback(async () => {
+    const trimmed = inputValue.trim();
+
+    if (!trimmed || isStreaming) {
+      return;
+    }
+
+    const userMessage: ChatMessage = {
+      id: createId('user'),
+      role: 'user',
+      content: trimmed,
+      timestamp: new Date().toISOString(),
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    const assistantMessageId = createId('assistant');
+    const assistantPlaceholder: ChatMessage = {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toISOString(),
+      agent: ORCHESTRATOR_AGENT,
+      status: 'streaming',
+    };
+
+    setMessages((current) => [...current, userMessage, assistantPlaceholder]);
     setInputValue('');
-
-    // Simulate bot response with agent selection
-    setTimeout(() => {
-      const selectedAgent = agents[Math.floor(Math.random() * agents.length)];
-      let responseText = '';
-
-      // Generate different responses based on the agent
-      switch (selectedAgent.id) {
-        case 'getweather':
-          responseText = `# Weather Report\n\n**Current Conditions:** Sunny, 72°F\n\n**Forecast:**\n- Today: Mostly sunny, high 75°F\n- Tomorrow: Partly cloudy, high 68°F\n\n*Data provided by Weather Agent*`;
-          break;
-        case 'calculator':
-          responseText = `# Calculation Result\n\n**Expression:** 15 × 23\n\n**Result:** 345\n\n**Additional Operations:**\n- 15 + 23 = 38\n- 15 ÷ 23 ≈ 0.652\n\n*Processed by Calculator Agent*`;
-          break;
-        case 'translator':
-          responseText = `# Translation Complete\n\n**Original:** Hello, how are you?\n\n**Translated to Spanish:** Hola, ¿cómo estás?\n\n**Pronunciation:** /ˈola ˌkoˈmo esˈtas/\n\n*Translated by Translation Agent*`;
-          break;
-        case 'scheduler':
-          responseText = `# Schedule Updated\n\n✅ **Appointment Booked:**\n- **Date:** Tomorrow at 2:00 PM\n- **Duration:** 1 hour\n- **Location:** Conference Room A\n\n📅 **Your Schedule:**\n- 9:00 AM: Team Meeting\n- 2:00 PM: New Appointment\n- 4:00 PM: Project Review\n\n*Managed by Scheduler Agent*`;
-          break;
-        case 'search':
-          responseText = `# Search Results\n\n**Query:** Latest AI developments\n\n🔍 **Top Results:**\n1. **GPT-4 Release** - New language model with enhanced capabilities\n2. **Neural Networks** - Breakthrough in machine learning\n3. **AI Ethics** - Guidelines for responsible AI development\n\n📊 **Summary:** The field of AI continues to evolve rapidly with new models and applications emerging regularly.\n\n*Researched by Search Agent*`;
-          break;
-        default:
-          responseText = `I received your message: "${userMessage.text}". This is a demo response from the system.`;
-      }
-
-      const botMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: responseText,
-        isUser: false,
-        timestamp: new Date(),
-        agent: {
-          name: selectedAgent.name,
-          icon: selectedAgent.icon
-        }
-      };
-      setMessages(prev => [...prev, botMessage]);
-    }, 1000);
-  };
-
-  const toggleTaskCompletion = (taskId: string) => {
-    setTasks(prev => prev.map(task =>
-      task.id === taskId ? { ...task, completed: !task.completed } : task
-    ));
-  };
-
-  const handleNewChat = () => {
-    setMessages([
-      {
-        id: Date.now().toString(),
-        text: 'Hello! I\'m here to help you with various tasks. What would you like to do?',
-        isUser: false,
-        timestamp: new Date()
-      }
-    ]);
+    setIsStreaming(true);
+    setConnectionError(null);
     setTasks([
-      { id: '1', description: 'Get weather for New York', completed: false },
-      { id: '2', description: 'Calculate 15 * 23', completed: false },
-      { id: '3', description: 'Translate "Hello" to Spanish', completed: false }
+      {
+        id: 'client-pending',
+        description: 'Submitting request to backend orchestrator',
+        status: 'running',
+        agent: ORCHESTRATOR_AGENT.name,
+      },
     ]);
-  };
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          sessionId,
+          message: trimmed,
+        }),
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error('Streaming request failed.');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim()) {
+            continue;
+          }
+
+          const event = JSON.parse(line) as StreamEvent;
+          handleStreamEvent(event, assistantMessageId);
+        }
+      }
+
+      if (buffer.trim()) {
+        const event = JSON.parse(buffer) as StreamEvent;
+        handleStreamEvent(event, assistantMessageId);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unexpected request failure.';
+      setConnectionError(message);
+      setTasks([
+        {
+          id: 'request-error',
+          description: message,
+          status: 'failed',
+          agent: ORCHESTRATOR_AGENT.name,
+        },
+      ]);
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === assistantMessageId
+            ? {
+                ...item,
+                content: message,
+                status: 'error',
+              }
+            : item
+        )
+      );
+    } finally {
+      setIsStreaming(false);
+    }
+  }, [handleStreamEvent, inputValue, isStreaming, sessionId]);
 
   return (
-    <div className="flex-1 bg-white dark:bg-gray-900 flex flex-col">
-      {/* Header with Dropdown Menu */}
-      <div className="bg-gray-50 dark:bg-gray-800 p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
-        <h3 className="font-semibold text-gray-800 dark:text-gray-200">Chat</h3>
-        <DropdownMenu
-          onStartNewConversation={handleNewChat}
-          onClearHistory={() => setMessages([])}
-        />
-      </div>
+    <div className="flex flex-1 flex-col bg-white dark:bg-gray-900">
+      <div className="flex items-center justify-between border-b border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
+        <div>
+          <h3 className="font-semibold text-gray-800 dark:text-gray-200">Chat</h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Session: <span className="font-mono">{sessionId || 'initializing'}</span>
+          </p>
+        </div>
 
-      {/* Tasks Status Bar */}
-      <div className="bg-gray-50 dark:bg-gray-800 p-4 border-b border-gray-200 dark:border-gray-700">
-        <h3 className="font-semibold text-gray-800 dark:text-gray-200 mb-2">Active Tasks</h3>
-        <div className="space-y-2">
-          {tasks.map(task => (
-            <div key={task.id} className="flex items-center space-x-2">
-              <input
-                type="checkbox"
-                checked={task.completed}
-                onChange={() => toggleTaskCompletion(task.id)}
-                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              <span className={`text-sm ${task.completed ? 'line-through text-gray-500' : 'text-gray-700 dark:text-gray-300'}`}>
-                {task.description}
-              </span>
-            </div>
-          ))}
+        <div className="flex items-center gap-3">
+          <span
+            className={`rounded-full px-3 py-1 text-xs font-medium ${
+              isStreaming
+                ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-200'
+                : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200'
+            }`}
+          >
+            {isStreaming ? 'Streaming response' : 'Idle'}
+          </span>
+          <DropdownMenu
+            onStartNewConversation={handleStartNewConversation}
+            onClearHistory={handleClearHistory}
+            onReloadHistory={handleReloadHistory}
+          />
         </div>
       </div>
 
-      {/* Chat Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map(message => (
-          <div
-            key={message.id}
-            className={`flex ${message.isUser ? 'justify-end' : 'justify-start'}`}
-          >
+      <div className="border-b border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-800 dark:text-gray-200">Active Tasks</h3>
+          <span className="text-xs text-gray-500 dark:text-gray-400">{activeTaskCount} active</span>
+        </div>
+
+        <div className="space-y-2">
+          {tasks.length === 0 ? (
+            <p className="text-sm text-gray-500 dark:text-gray-400">No active tasks. Submit a message to start orchestration.</p>
+          ) : (
+            tasks.map((task) => (
+              <div
+                key={task.id}
+                className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900"
+              >
+                <div>
+                  <p className="text-sm text-gray-800 dark:text-gray-200">{task.description}</p>
+                  {task.agent && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400">{task.agent}</p>
+                  )}
+                </div>
+                <span className={`rounded-full px-2 py-1 text-xs font-medium ${getTaskClasses(task.status)}`}>
+                  {task.status}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+
+        {connectionError && (
+          <p className="mt-3 text-sm text-red-600 dark:text-red-400">{connectionError}</p>
+        )}
+      </div>
+
+      <div className="flex-1 space-y-4 overflow-y-auto p-4">
+        {messages.map((message) => (
+          <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div
-              className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                message.isUser
+              className={`max-w-xs rounded-lg px-4 py-3 lg:max-w-2xl ${
+                message.role === 'user'
                   ? 'bg-blue-500 text-white'
-                  : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100'
+                  : 'bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-gray-100'
               }`}
             >
-              {!message.isUser && message.agent && (
-                <div className="flex items-center space-x-2 mb-2 pb-2 border-b border-gray-200 dark:border-gray-600">
+              {message.role === 'assistant' && message.agent && (
+                <div className="mb-2 flex items-center gap-2 border-b border-gray-200 pb-2 dark:border-gray-600">
                   <span className="text-lg">{message.agent.icon}</span>
-                  <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
+                  <span className="text-xs font-medium text-gray-600 dark:text-gray-300">
                     {message.agent.name}
                   </span>
+                  {message.status && (
+                    <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-700 dark:bg-gray-600 dark:text-gray-100">
+                      {message.status}
+                    </span>
+                  )}
                 </div>
               )}
+
               <div className="text-sm">
-                {message.isUser ? (
-                  <p>{message.text}</p>
+                {message.role === 'user' ? (
+                  <p>{message.content}</p>
                 ) : (
-                  <div className="prose prose-sm dark:prose-invert max-w-none">
+                  <div className="prose prose-sm max-w-none dark:prose-invert">
                     <ReactMarkdown
                       components={{
-                        h1: ({children}) => <h1 className="text-lg font-bold mb-2">{children}</h1>,
-                        h2: ({children}) => <h2 className="text-base font-semibold mb-1">{children}</h2>,
-                        p: ({children}) => <p className="mb-2">{children}</p>,
-                        ul: ({children}) => <ul className="list-disc list-inside mb-2">{children}</ul>,
-                        ol: ({children}) => <ol className="list-decimal list-inside mb-2">{children}</ol>,
-                        li: ({children}) => <li className="mb-1">{children}</li>,
-                        strong: ({children}) => <strong className="font-semibold">{children}</strong>,
-                        em: ({children}) => <em className="italic">{children}</em>,
-                        code: ({children}) => <code className="bg-gray-200 dark:bg-gray-600 px-1 py-0.5 rounded text-xs">{children}</code>,
+                        h1: ({ children }) => <h1 className="mb-2 text-lg font-bold">{children}</h1>,
+                        h2: ({ children }) => <h2 className="mb-1 text-base font-semibold">{children}</h2>,
+                        p: ({ children }) => <p className="mb-2">{children}</p>,
+                        ul: ({ children }) => <ul className="mb-2 list-inside list-disc">{children}</ul>,
+                        ol: ({ children }) => <ol className="mb-2 list-inside list-decimal">{children}</ol>,
+                        li: ({ children }) => <li className="mb-1">{children}</li>,
+                        code: ({ children }) => (
+                          <code className="rounded bg-gray-200 px-1 py-0.5 text-xs dark:bg-gray-600">
+                            {children}
+                          </code>
+                        ),
                       }}
                     >
-                      {message.text}
+                      {message.content || (message.status === 'streaming' ? '_Waiting for streamed output..._' : '')}
                     </ReactMarkdown>
                   </div>
                 )}
               </div>
-              <p className="text-xs opacity-70 mt-1">
-                {message.timestamp.toLocaleTimeString()}
+
+              <p className="mt-2 text-xs opacity-70">
+                {new Date(message.timestamp).toLocaleTimeString()}
               </p>
             </div>
           </div>
@@ -269,22 +470,29 @@ export default function ChatInterface() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
-      <div className="border-t border-gray-200 dark:border-gray-700 p-4">
-        <div className="flex space-x-2">
+      <div className="border-t border-gray-200 p-4 dark:border-gray-700">
+        <div className="flex gap-2">
           <input
             type="text"
             value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-            placeholder="Type your message..."
-            className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+            onChange={(event) => setInputValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                handleSendMessage().catch(() => undefined);
+              }
+            }}
+            placeholder="Ask for weather, search, or a general task..."
+            className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
           />
           <button
-            onClick={handleSendMessage}
-            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            onClick={() => {
+              handleSendMessage().catch(() => undefined);
+            }}
+            disabled={isStreaming}
+            className="rounded-lg bg-blue-500 px-4 py-2 text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+            type="button"
           >
-            Send
+            {isStreaming ? 'Working...' : 'Send'}
           </button>
         </div>
       </div>

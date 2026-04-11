@@ -16,6 +16,17 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Environment Variables
+
+Create a local environment file from [`./.env.example`](.env.example) and provide your API keys:
+
+```bash
+cp .env.example .env.local
+```
+
+- `OPENAI_API_KEY`: enables LLM response synthesis.
+- `WEATHERAPI_API_KEY`: enables live weather lookups in [`runWeatherAgent()`](backend/agents/toolAgents.ts:65) using `https://api.weatherapi.com/v1/current.json`.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
