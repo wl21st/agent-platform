@@ -48,5 +48,12 @@ export const agents: Agent[] = [
     description: 'Performs intelligent web searches and summarizes information from reliable sources. Can answer questions and provide research.',
     capabilities: ['Web search', 'Information summarization', 'Question answering'],
     icon: '🔍'
+  },
+  {
+    id: 'webpage-summarize',
+    name: 'Webpage Summarize Agent',
+    description: 'Fetches a webpage by URL, extracts its text content, and provides a concise summary. Supports any publicly accessible HTML page.',
+    capabilities: ['URL fetching', 'HTML content extraction', 'Page summarization'],
+    icon: '📄'
   }
 ];

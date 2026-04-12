@@ -1,12 +1,14 @@
 import {
   SEARCH_AGENT,
   WEATHER_AGENT,
+  WEBPAGE_SUMMARIZE_AGENT,
   type AgentSummary,
   type UserPreferences,
   type WeatherContext,
 } from '@/lib/agent-chat';
+import { runWebpageSummarizeAgent } from '@backend/agents/webpageSummarizeAgent';
 
-export type ToolRoute = 'weather' | 'search';
+export type ToolRoute = 'weather' | 'search' | 'webpage-summarize';
 
 export interface ToolExecutionContext {
   input: string;
@@ -17,6 +19,8 @@ export interface ToolExecutionContext {
   extractedTimeframe?: 'current' | 'tomorrow';
   /** LLM-extracted search query override */
   extractedSearchQuery?: string;
+  /** LLM-extracted URL override (webpage-summarize queries) */
+  extractedUrl?: string;
 }
 
 export interface ToolExecutionResult {
@@ -361,6 +365,17 @@ export const TOOL_REGISTRY: Record<ToolRoute, ToolDefinition> = {
     buildPreferenceUpdates: ({ input, preferences }) => ({
       recentSearchTopics: [extractSearchTopic(input), ...preferences.recentSearchTopics],
       lastUsedAgent: SEARCH_AGENT.name,
+    }),
+  },
+  'webpage-summarize': {
+    route: 'webpage-summarize',
+    taskId: 'webpage-summarize-tool',
+    taskDescription: 'Fetch and summarize webpage content using Webpage Summarize Agent',
+    keywords: /(summarize|summary|summarise|webpage|web\s*page|url|总结|网页|概括|摘要|https?:\/\/)/i,
+    agentName: WEBPAGE_SUMMARIZE_AGENT.name,
+    execute: runWebpageSummarizeAgent,
+    buildPreferenceUpdates: () => ({
+      lastUsedAgent: WEBPAGE_SUMMARIZE_AGENT.name,
     }),
   },
 };

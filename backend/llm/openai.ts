@@ -27,13 +27,15 @@ function getOpenAIClient() {
 
 export interface IntentClassification {
   /** Which tool should be invoked (or 'none' for direct LLM response) */
-  tool: 'weather' | 'search' | 'none';
+  tool: 'weather' | 'search' | 'webpage-summarize' | 'none';
   /** Extracted city / location (weather queries only) */
   location?: string;
   /** current day or tomorrow (weather queries only) */
   timeframe?: 'current' | 'tomorrow';
   /** Search query text (search queries only) */
   searchQuery?: string;
+  /** Extracted URL (webpage-summarize queries only) */
+  url?: string;
   /** Whether this message is a follow-up to the previous conversation */
   isFollowUp: boolean;
 }
@@ -44,10 +46,11 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     'Analyze the user message AND the conversation history to determine what to do.',
     '',
     'Available tools:',
-    '  weather — For weather-related queries. Extract the city/location and timeframe.',
-    '  search  — For web search / information lookup. Extract the search query.',
-    '  none    — For follow-up questions, conversational messages, temperature conversions,',
-    '            greetings, or anything that can be answered from context.',
+    '  weather            — For weather-related queries. Extract the city/location and timeframe.',
+    '  search             — For web search / information lookup. Extract the search query.',
+    '  webpage-summarize  — For summarizing a specific webpage/URL. Extract the URL.',
+    '  none               — For follow-up questions, conversational messages, temperature conversions,',
+    '                        greetings, or anything that can be answered from context.',
     '',
     'Rules:',
     '- If the user asks to CONVERT temperatures or references previously-discussed data,',
@@ -56,10 +59,14 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     '  Extract the location (city name only, NO time words like "tomorrow").',
     '  Set timeframe to "tomorrow" only if the user explicitly asks about tomorrow.',
     '- If the user asks to search or find information, set tool to "search".',
+    '- If the user provides a URL and asks to summarize, read, or extract content from it,',
+    '  set tool to "webpage-summarize" and extract the full URL into the "url" field.',
+    '  This includes messages like "summarize https://...", "what does this page say: https://..."',
+    '  or simply pasting a URL.',
     '- For greetings, general chat, or follow-up questions, set tool to "none".',
     '',
     'You MUST respond ONLY with a valid JSON object, nothing else. Example:',
-    '{"tool":"weather","location":"New York","timeframe":"tomorrow","searchQuery":"","isFollowUp":false}',
+    '{"tool":"webpage-summarize","url":"https://example.com","location":"","timeframe":"","searchQuery":"","isFollowUp":false}',
   ];
 
   if (preferences.preferredWeatherLocation) {
@@ -171,7 +178,7 @@ export async function classifyUserIntent(params: {
     const parsed = JSON.parse(jsonText) as IntentClassification;
 
     // Validate
-    if (!['weather', 'search', 'none'].includes(parsed.tool)) {
+    if (!['weather', 'search', 'webpage-summarize', 'none'].includes(parsed.tool)) {
       return null;
     }
 
@@ -188,7 +195,7 @@ export async function classifyUserIntent(params: {
 
 function buildResponseSystemPrompt(preferences: UserPreferences): string {
   const lines: string[] = [
-    'You are a helpful orchestration assistant. You help users with weather, search, and general questions.',
+    'You are a helpful orchestration assistant. You help users with weather, search, webpage summarization, and general questions.',
     '',
     'Rules for conversation continuity:',
     '- ALWAYS use the full conversation history to understand context.',
@@ -199,6 +206,17 @@ function buildResponseSystemPrompt(preferences: UserPreferences): string {
     '- Respond in the same language the user is using.',
     '- Use markdown formatting for clear responses.',
     '- Be concise and direct.',
+    '',
+    'Rules for webpage summarization responses:',
+    '- When presenting a webpage summary, ALWAYS use the following structured markdown format:',
+    '  1. Start with a heading: "# Page Summary: <title>"',
+    '  2. Show the source URL',
+    '  3. A brief one-sentence overview paragraph',
+    '  4. "## 🔑 Key Points" section with 3-7 bullet points highlighting the most important information',
+    '  5. "## 📋 Details" section with a more detailed breakdown if the content warrants it',
+    '  6. "## 💡 Overall Takeaway" section with a concise 1-2 sentence conclusion',
+    '- Bold important terms and use clear, scannable formatting',
+    '- If the page content is minimal or empty, note this to the user',
   ];
 
   if (preferences.preferredWeatherLocation) {
@@ -364,13 +382,22 @@ export async function generateAssistantResponse(params: {
   try {
     let toolSuffix: string | undefined;
     if (params.toolResult) {
+      const isWebpageSummary = params.toolResult.agent.id === 'webpage-summarize';
+      const presentationInstruction = isWebpageSummary
+        ? [
+            'Summarize this webpage content using the structured markdown format specified in the system prompt.',
+            'Include: a brief overview, Key Points (bullet list), Details (if warranted), and an Overall Takeaway.',
+            'Use bold for important terms. Be concise yet informative.',
+          ].join(' ')
+        : 'Present this information naturally to the user. Use markdown formatting.';
+
       toolSuffix = [
         '---',
         `**Tool result from ${params.toolResult.agent.name}:**`,
         params.toolResult.markdown,
         '---',
         '',
-        'Present this information naturally to the user. Use markdown formatting.',
+        presentationInstruction,
       ].join('\n');
     }
 
