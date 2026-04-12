@@ -75,6 +75,14 @@ export default function JobsInterface() {
     });
   }, [jobs, statusFilter, agentFilter]);
 
+  const filteredActiveJobs = useMemo(() => {
+    return jobs.filter(job => job.status === 'running' && (agentFilter === 'all' || job.agent === agentFilter));
+  }, [jobs, agentFilter]);
+
+  const otherJobs = useMemo(() => {
+    return filteredJobs.filter(job => job.status !== 'running');
+  }, [filteredJobs]);
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'running': return '🔄';
@@ -87,7 +95,7 @@ export default function JobsInterface() {
 
   return (
     <div className="flex-1 bg-white dark:bg-gray-900 p-6">
-      <div className="max-w-4xl">
+      <div>
         <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-6">Background Jobs</h1>
 
         {/* Filter Controls */}
@@ -129,54 +137,114 @@ export default function JobsInterface() {
           </div>
         </div>
 
-        <div className="space-y-4">
-          {filteredJobs.length === 0 ? (
-            <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-              No jobs match the current filters.
-            </div>
-          ) : (
-            filteredJobs.map(job => (
-              <div key={job.id} className="bg-gray-50 dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex items-center space-x-3">
-                    <span className="text-2xl">{getStatusIcon(job.status)}</span>
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{job.name}</h3>
-                      {job.agent && (
-                        <p className="text-sm text-gray-600 dark:text-gray-400">Agent: {job.agent}</p>
-                      )}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Active Tasks Column */}
+          <div>
+            <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-100 mb-4">Active Tasks</h2>
+            <div className="space-y-4">
+              {filteredActiveJobs.length === 0 ? (
+                <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                  No active tasks.
+                </div>
+              ) : (
+                filteredActiveJobs.map(job => (
+                  <div key={job.id} className="bg-gray-50 dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex items-center space-x-3">
+                        <span className="text-2xl">{getStatusIcon(job.status)}</span>
+                        <div>
+                          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{job.name}</h3>
+                          {job.agent && (
+                            <p className="text-sm text-gray-600 dark:text-gray-400">Agent: {job.agent}</p>
+                          )}
+                        </div>
+                      </div>
+                      <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(job.status)}`}>
+                        {job.status.charAt(0).toUpperCase() + job.status.slice(1)}
+                      </span>
+                    </div>
+
+                    <p className="text-gray-700 dark:text-gray-300 mb-4">{job.description}</p>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm text-gray-600 dark:text-gray-400">
+                        <span>Progress</span>
+                        <span>{job.progress}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                        <div
+                          className={`h-2 rounded-full transition-all duration-300 ${
+                            job.status === 'completed' ? 'bg-green-500' :
+                            job.status === 'failed' ? 'bg-red-500' :
+                            job.status === 'running' ? 'bg-blue-500' : 'bg-gray-400'
+                          }`}
+                          style={{ width: `${job.progress}%` }}
+                        ></div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 text-sm text-gray-500 dark:text-gray-400">
+                      Started: {job.startTimeLabel}
                     </div>
                   </div>
-                  <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(job.status)}`}>
-                    {job.status.charAt(0).toUpperCase() + job.status.slice(1)}
-                  </span>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Other Tasks Column */}
+          <div>
+            <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-100 mb-4">Other Tasks</h2>
+            <div className="space-y-4">
+              {otherJobs.length === 0 ? (
+                <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                  No other tasks match the current filters.
                 </div>
+              ) : (
+                otherJobs.map(job => (
+                  <div key={job.id} className="bg-gray-50 dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex items-center space-x-3">
+                        <span className="text-2xl">{getStatusIcon(job.status)}</span>
+                        <div>
+                          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{job.name}</h3>
+                          {job.agent && (
+                            <p className="text-sm text-gray-600 dark:text-gray-400">Agent: {job.agent}</p>
+                          )}
+                        </div>
+                      </div>
+                      <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(job.status)}`}>
+                        {job.status.charAt(0).toUpperCase() + job.status.slice(1)}
+                      </span>
+                    </div>
 
-                <p className="text-gray-700 dark:text-gray-300 mb-4">{job.description}</p>
+                    <p className="text-gray-700 dark:text-gray-300 mb-4">{job.description}</p>
 
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm text-gray-600 dark:text-gray-400">
-                    <span>Progress</span>
-                    <span>{job.progress}%</span>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm text-gray-600 dark:text-gray-400">
+                        <span>Progress</span>
+                        <span>{job.progress}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                        <div
+                          className={`h-2 rounded-full transition-all duration-300 ${
+                            job.status === 'completed' ? 'bg-green-500' :
+                            job.status === 'failed' ? 'bg-red-500' :
+                            job.status === 'running' ? 'bg-blue-500' : 'bg-gray-400'
+                          }`}
+                          style={{ width: `${job.progress}%` }}
+                        ></div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 text-sm text-gray-500 dark:text-gray-400">
+                      Started: {job.startTimeLabel}
+                    </div>
                   </div>
-                  <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                    <div
-                      className={`h-2 rounded-full transition-all duration-300 ${
-                        job.status === 'completed' ? 'bg-green-500' :
-                        job.status === 'failed' ? 'bg-red-500' :
-                        job.status === 'running' ? 'bg-blue-500' : 'bg-gray-400'
-                      }`}
-                      style={{ width: `${job.progress}%` }}
-                    ></div>
-                  </div>
-                </div>
-
-                <div className="mt-4 text-sm text-gray-500 dark:text-gray-400">
-                  Started: {job.startTimeLabel}
-                </div>
-              </div>
-            ))
-          )}
+                ))
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

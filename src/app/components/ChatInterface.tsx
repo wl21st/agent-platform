@@ -111,15 +111,32 @@ export default function ChatInterface() {
   const [inputValue, setInputValue] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isNearBottom, setIsNearBottom] = useState(true);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = messagesContainerRef.current;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (container) {
+      const threshold = 100; // pixels from bottom
+      const isNear = container.scrollTop + container.clientHeight >= container.scrollHeight - threshold;
+      setIsNearBottom(isNear);
+    }
   }, []);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, scrollToBottom]);
+    if (isNearBottom) {
+      scrollToBottom();
+    }
+  }, [messages, isNearBottom, scrollToBottom]);
 
   const loadSession = useCallback(async (nextSessionId: string) => {
     const response = await fetch(`/api/session/${nextSessionId}`);
@@ -351,12 +368,21 @@ export default function ChatInterface() {
 
   return (
     <div className="flex flex-1 flex-col bg-white dark:bg-gray-900">
-      <div className="flex items-center justify-between border-b border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
-        <div>
-          <h3 className="font-semibold text-gray-800 dark:text-gray-200">Chat</h3>
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            Session: <span className="font-mono">{sessionId || 'initializing'}</span>
-          </p>
+      <div className="fixed top-0 left-16 right-0 z-10 flex items-center justify-between border-b border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleStartNewConversation}
+            className="px-3 py-1 text-xs font-medium bg-blue-500 text-white rounded hover:bg-blue-600"
+            type="button"
+          >
+            New Chat
+          </button>
+          <div>
+            <h3 className="font-semibold text-gray-800 dark:text-gray-200">Chat</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Session: <span className="font-mono">{sessionId || 'initializing'}</span>
+            </p>
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
@@ -377,125 +403,143 @@ export default function ChatInterface() {
         </div>
       </div>
 
-      <div className="border-b border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="font-semibold text-gray-800 dark:text-gray-200">Active Tasks</h3>
-          <span className="text-xs text-gray-500 dark:text-gray-400">{activeTaskCount} active</span>
-        </div>
-
-        <div className="space-y-2">
-          {tasks.length === 0 ? (
-            <p className="text-sm text-gray-500 dark:text-gray-400">No active tasks. Submit a message to start orchestration.</p>
-          ) : (
-            tasks.map((task) => (
-              <div
-                key={task.id}
-                className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900"
-              >
-                <div>
-                  <p className="text-sm text-gray-800 dark:text-gray-200">{task.description}</p>
-                  {task.agent && (
-                    <p className="text-xs text-gray-500 dark:text-gray-400">{task.agent}</p>
-                  )}
-                </div>
-                <span className={`rounded-full px-2 py-1 text-xs font-medium ${getTaskClasses(task.status)}`}>
-                  {task.status}
-                </span>
-              </div>
-            ))
-          )}
-        </div>
-
-        {connectionError && (
-          <p className="mt-3 text-sm text-red-600 dark:text-red-400">{connectionError}</p>
-        )}
-      </div>
-
-      <div className="flex-1 space-y-4 overflow-y-auto p-4">
-        {messages.map((message) => (
-          <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div
-              className={`max-w-xs rounded-lg px-4 py-3 lg:max-w-2xl ${
-                message.role === 'user'
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-gray-100'
-              }`}
+      <div className="flex flex-1 pt-16">
+        {/* Active Tasks Column */}
+        <div className={`${isCollapsed ? 'w-12' : 'w-72'} border-r border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800 transition-all duration-300 flex flex-col h-full`}>
+          <div className="flex items-center justify-between p-5 pb-1 border-b border-gray-200 dark:border-gray-700">
+            {!isCollapsed && <h3 className="font-semibold text-gray-800 dark:text-gray-200">Active Tasks</h3>}
+            <button
+              onClick={() => setIsCollapsed(!isCollapsed)}
+              className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+              type="button"
             >
-              {message.role === 'assistant' && message.agent && (
-                <div className="mb-2 flex items-center gap-2 border-b border-gray-200 pb-2 dark:border-gray-600">
-                  <span className="text-lg">{message.agent.icon}</span>
-                  <span className="text-xs font-medium text-gray-600 dark:text-gray-300">
-                    {message.agent.name}
-                  </span>
-                  {message.status && (
-                    <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-700 dark:bg-gray-600 dark:text-gray-100">
-                      {message.status}
-                    </span>
-                  )}
-                </div>
-              )}
+              {isCollapsed ? '▶' : '◀'}
+            </button>
+            {!isCollapsed && <span className="text-xs text-gray-500 dark:text-gray-400">{activeTaskCount} active</span>}
+          </div>
 
-              <div className="text-sm">
-                {message.role === 'user' ? (
-                  <p>{message.content}</p>
+          {!isCollapsed && (
+            <div className="flex-1 pt-8 pb-4 px-4 overflow-y-auto">
+              <div className="space-y-2">
+                {tasks.length === 0 ? (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">No active tasks. Submit a message to start orchestration.</p>
                 ) : (
-                  <div className="prose prose-sm max-w-none dark:prose-invert">
-                    <ReactMarkdown
-                      components={{
-                        h1: ({ children }) => <h1 className="mb-2 text-lg font-bold">{children}</h1>,
-                        h2: ({ children }) => <h2 className="mb-1 text-base font-semibold">{children}</h2>,
-                        p: ({ children }) => <p className="mb-2">{children}</p>,
-                        ul: ({ children }) => <ul className="mb-2 list-inside list-disc">{children}</ul>,
-                        ol: ({ children }) => <ol className="mb-2 list-inside list-decimal">{children}</ol>,
-                        li: ({ children }) => <li className="mb-1">{children}</li>,
-                        code: ({ children }) => (
-                          <code className="rounded bg-gray-200 px-1 py-0.5 text-xs dark:bg-gray-600">
-                            {children}
-                          </code>
-                        ),
-                      }}
+                  tasks.map((task) => (
+                    <div
+                      key={task.id}
+                      className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900"
                     >
-                      {message.content || (message.status === 'streaming' ? '_Waiting for streamed output..._' : '')}
-                    </ReactMarkdown>
-                  </div>
+                      <div>
+                        <p className="text-sm text-gray-800 dark:text-gray-200">{task.description}</p>
+                        {task.agent && (
+                          <p className="text-xs text-gray-500 dark:text-gray-400">{task.agent}</p>
+                        )}
+                      </div>
+                      <span className={`rounded-full px-2 py-1 text-xs font-medium ${getTaskClasses(task.status)}`}>
+                        {task.status}
+                      </span>
+                    </div>
+                  ))
                 )}
               </div>
 
-              <p className="mt-2 text-xs opacity-70">
-                {new Date(message.timestamp).toLocaleTimeString()}
-              </p>
+              {connectionError && (
+                <p className="mt-3 text-sm text-red-600 dark:text-red-400">{connectionError}</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Chat Column */}
+        <div className="flex flex-1 flex-col">
+          <div className="flex-1 space-y-4 overflow-y-auto p-4" ref={messagesContainerRef} onScroll={handleScroll}>
+            {messages.map((message) => (
+              <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  className={`max-w-xs rounded-lg px-4 py-3 lg:max-w-2xl ${
+                    message.role === 'user'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-gray-100'
+                  }`}
+                >
+                  {message.role === 'assistant' && message.agent && (
+                    <div className="mb-2 flex items-center gap-2 border-b border-gray-200 pb-2 dark:border-gray-600">
+                      <span className="text-lg">{message.agent.icon}</span>
+                      <span className="text-xs font-medium text-gray-600 dark:text-gray-300">
+                        {message.agent.name}
+                      </span>
+                      {message.status && (
+                        <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-700 dark:bg-gray-600 dark:text-gray-100">
+                          {message.status}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="text-sm">
+                    {message.role === 'user' ? (
+                      <p>{message.content}</p>
+                    ) : (
+                      <div className="prose prose-sm max-w-none dark:prose-invert">
+                        <ReactMarkdown
+                          components={{
+                            h1: ({ children }) => <h1 className="mb-2 text-lg font-bold">{children}</h1>,
+                            h2: ({ children }) => <h2 className="mb-1 text-base font-semibold">{children}</h2>,
+                            p: ({ children }) => <p className="mb-2">{children}</p>,
+                            ul: ({ children }) => <ul className="mb-2 list-inside list-disc">{children}</ul>,
+                            ol: ({ children }) => <ul className="mb-2 list-inside list-decimal">{children}</ul>,
+                            li: ({ children }) => <li className="mb-1">{children}</li>,
+                            code: ({ children }) => (
+                              <code className="rounded bg-gray-200 px-1 py-0.5 text-xs dark:bg-gray-600">
+                                {children}
+                              </code>
+                            ),
+                          }}
+                        >
+                          {message.content || (message.status === 'streaming' ? '_Waiting for streamed output..._' : '')}
+                        </ReactMarkdown>
+                      </div>
+                    )}
+                  </div>
+
+                  <p className="mt-2 text-xs opacity-70">
+                    {new Date(message.timestamp).toLocaleTimeString()}
+                  </p>
+                </div>
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
+
+          <div className="sticky bottom-0 border-t border-gray-200 p-4 dark:border-gray-700 bg-white dark:bg-gray-900">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={inputValue}
+                onChange={(event) => setInputValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    handleSendMessage().catch(() => undefined);
+                  }
+                }}
+                placeholder="Ask for weather, search, or a general task..."
+                className="flex-1 rounded-full bg-gray-100 dark:bg-gray-700 px-4 py-3 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                onClick={() => {
+                  handleSendMessage().catch(() => undefined);
+                }}
+                disabled={isStreaming}
+                className="rounded-full bg-blue-500 px-4 py-2 text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50 ml-2"
+                type="button"
+              >
+                {isStreaming ? 'Working...' : 'Send'}
+              </button>
             </div>
           </div>
-        ))}
-        <div ref={messagesEndRef} />
-      </div>
-
-      <div className="border-t border-gray-200 p-4 dark:border-gray-700">
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={inputValue}
-            onChange={(event) => setInputValue(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                handleSendMessage().catch(() => undefined);
-              }
-            }}
-            placeholder="Ask for weather, search, or a general task..."
-            className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
-          />
-          <button
-            onClick={() => {
-              handleSendMessage().catch(() => undefined);
-            }}
-            disabled={isStreaming}
-            className="rounded-lg bg-blue-500 px-4 py-2 text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-            type="button"
-          >
-            {isStreaming ? 'Working...' : 'Send'}
-          </button>
         </div>
       </div>
+
     </div>
   );
 }

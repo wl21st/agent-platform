@@ -11,7 +11,7 @@ interface AgentsListProps {
 export default function AgentsList({ agents, selectedAgent, onSelectAgent }: AgentsListProps) {
   return (
     <div className="w-80 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700 overflow-y-auto">
-      <div className="p-4">
+      <div className="px-4 pt-20 pb-4">
         <h2 className="text-xl font-semibold mb-4 text-gray-800 dark:text-gray-200">Agents List</h2>
         <div className="space-y-2">
           {agents.map((agent) => (

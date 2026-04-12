@@ -9,7 +9,7 @@ interface SidebarProps {
 
 export default function Sidebar({ currentView, onViewChange }: SidebarProps) {
   return (
-    <div className="w-16 bg-gray-100 dark:bg-gray-800 h-screen flex flex-col items-center py-4 space-y-4">
+    <div className="fixed left-0 top-0 w-16 bg-gray-100 dark:bg-gray-800 h-screen flex flex-col items-center py-4 space-y-4 z-20">
       <button
         onClick={() => onViewChange('agents')}
         className={`p-3 rounded-lg transition-colors ${

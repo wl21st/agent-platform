@@ -31,7 +31,7 @@ export default function Home() {
       <Sidebar currentView={currentView} onViewChange={handleViewChange} />
 
       {/* Main Content */}
-      <div className="flex flex-1">
+      <div className="flex flex-1 ml-16">
         {/* Agents List - Middle Column (only shown when agents view is active) */}
         {currentView === 'agents' && (
           <AgentsList
