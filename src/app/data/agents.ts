@@ -55,5 +55,12 @@ export const agents: Agent[] = [
     description: 'Fetches a webpage by URL, extracts its text content, and provides a concise summary. Supports any publicly accessible HTML page.',
     capabilities: ['URL fetching', 'HTML content extraction', 'Page summarization'],
     icon: '📄'
+  },
+  {
+    id: 'cosmetic-safe-check',
+    name: 'Cosmetic Safe Check Agent',
+    description: 'Analyzes cosmetic and skincare product ingredients for safety risks. Provides a risk rating (high, medium, low) and highlights harmful ingredients with detailed explanations.',
+    capabilities: ['Ingredient safety analysis', 'Risk rating', 'Harmful ingredient detection', 'Safety recommendations'],
+    icon: '🧴'
   }
 ];

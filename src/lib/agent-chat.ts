@@ -1,4 +1,4 @@
-export type AgentId = 'orchestrator' | 'weather' | 'search' | 'webpage-summarize';
+export type AgentId = 'orchestrator' | 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check';
 
 export interface AgentSummary {
   id: AgentId;
@@ -105,8 +105,14 @@ export const WEBPAGE_SUMMARIZE_AGENT: AgentSummary = {
   icon: '📄',
 };
 
+export const COSMETIC_SAFE_CHECK_AGENT: AgentSummary = {
+  id: 'cosmetic-safe-check',
+  name: 'Cosmetic Safe Check Agent',
+  icon: '🧴',
+};
+
 export const INITIAL_ASSISTANT_GREETING =
-  'Hello! I\'m the Orchestrator Agent. Ask for weather, search, webpage summary, or general help and I\'ll route the request to the best tool.';
+  'Hello! I\'m the Orchestrator Agent. Ask for weather, search, webpage summary, cosmetic ingredient safety check, or general help and I\'ll route the request to the best tool.';
 
 export function createId(prefix = 'id') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

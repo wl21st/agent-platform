@@ -1,4 +1,5 @@
 import {
+  COSMETIC_SAFE_CHECK_AGENT,
   SEARCH_AGENT,
   WEATHER_AGENT,
   WEBPAGE_SUMMARIZE_AGENT,
@@ -6,9 +7,10 @@ import {
   type UserPreferences,
   type WeatherContext,
 } from '@/lib/agent-chat';
+import { runCosmeticSafeCheckAgent } from '@backend/agents/cosmeticSafeCheckAgent';
 import { runWebpageSummarizeAgent } from '@backend/agents/webpageSummarizeAgent';
 
-export type ToolRoute = 'weather' | 'search' | 'webpage-summarize';
+export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check';
 
 export interface ToolExecutionContext {
   input: string;
@@ -376,6 +378,17 @@ export const TOOL_REGISTRY: Record<ToolRoute, ToolDefinition> = {
     execute: runWebpageSummarizeAgent,
     buildPreferenceUpdates: () => ({
       lastUsedAgent: WEBPAGE_SUMMARIZE_AGENT.name,
+    }),
+  },
+  'cosmetic-safe-check': {
+    route: 'cosmetic-safe-check',
+    taskId: 'cosmetic-safe-check-tool',
+    taskDescription: 'Analyze cosmetic ingredients for safety risks using Cosmetic Safe Check Agent',
+    keywords: /(cosmetic|skincare|skin\s*care|ingredient|ingredients|paraben|sulfate|化妆品|护肤|成分|配方|安全)/i,
+    agentName: COSMETIC_SAFE_CHECK_AGENT.name,
+    execute: runCosmeticSafeCheckAgent,
+    buildPreferenceUpdates: () => ({
+      lastUsedAgent: COSMETIC_SAFE_CHECK_AGENT.name,
     }),
   },
 };

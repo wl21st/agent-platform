@@ -27,7 +27,7 @@ function getOpenAIClient() {
 
 export interface IntentClassification {
   /** Which tool should be invoked (or 'none' for direct LLM response) */
-  tool: 'weather' | 'search' | 'webpage-summarize' | 'none';
+  tool: 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'none';
   /** Extracted city / location (weather queries only) */
   location?: string;
   /** current day or tomorrow (weather queries only) */
@@ -49,6 +49,9 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     '  weather            — For weather-related queries. Extract the city/location and timeframe.',
     '  search             — For web search / information lookup. Extract the search query.',
     '  webpage-summarize  — For summarizing a specific webpage/URL. Extract the URL.',
+    '  cosmetic-safe-check — For analyzing cosmetic/skincare product ingredients for safety risks.',
+    '                        Trigger when the user provides a list of cosmetic ingredients or asks about',
+    '                        ingredient safety, product safety, or skincare ingredient analysis.',
     '  none               — For follow-up questions, conversational messages, temperature conversions,',
     '                        greetings, or anything that can be answered from context.',
     '',
@@ -178,7 +181,7 @@ export async function classifyUserIntent(params: {
     const parsed = JSON.parse(jsonText) as IntentClassification;
 
     // Validate
-    if (!['weather', 'search', 'webpage-summarize', 'none'].includes(parsed.tool)) {
+    if (!['weather', 'search', 'webpage-summarize', 'cosmetic-safe-check', 'none'].includes(parsed.tool)) {
       return null;
     }
 
@@ -217,6 +220,12 @@ function buildResponseSystemPrompt(preferences: UserPreferences): string {
     '  6. "## 💡 Overall Takeaway" section with a concise 1-2 sentence conclusion',
     '- Bold important terms and use clear, scannable formatting',
     '- If the page content is minimal or empty, note this to the user',
+    '',
+    'Rules for cosmetic ingredient safety responses:',
+    '- When presenting a cosmetic ingredient analysis, present the tool result markdown as-is.',
+    '- You may add a brief conversational intro and any additional context about specific ingredients.',
+    '- Emphasize high-risk ingredients and explain why they should be avoided.',
+    '- If the user asks follow-up questions about specific ingredients, answer from context.',
   ];
 
   if (preferences.preferredWeatherLocation) {
