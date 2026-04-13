@@ -1,4 +1,4 @@
-export type AgentId = 'orchestrator' | 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check';
+export type AgentId = 'orchestrator' | 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape';
 
 export interface AgentSummary {
   id: AgentId;
@@ -78,6 +78,7 @@ export type StreamEvent =
   | { type: 'session'; sessionId: string }
   | { type: 'tasks'; tasks: TaskStatus[] }
   | { type: 'message'; delta: string; agent?: AgentSummary }
+  | { type: 'agent-done'; message: ChatMessage }
   | { type: 'done'; message: ChatMessage; tasks: TaskStatus[]; preferences: UserPreferences }
   | { type: 'error'; message: string };
 
@@ -111,8 +112,14 @@ export const COSMETIC_SAFE_CHECK_AGENT: AgentSummary = {
   icon: '🧴',
 };
 
+export const INGREDIENTS_SCRAPE_AGENT: AgentSummary = {
+  id: 'ingredients-scrape',
+  name: 'Ingredients Scrape Agent',
+  icon: '🔬',
+};
+
 export const INITIAL_ASSISTANT_GREETING =
-  'Hello! I\'m the Orchestrator Agent. Ask for weather, search, webpage summary, cosmetic ingredient safety check, or general help and I\'ll route the request to the best tool.';
+  'Hello! I\'m the Orchestrator Agent. Ask for weather, search, webpage summary, cosmetic ingredient safety check, ingredient scraping from a product URL, or general help and I\'ll route the request to the best tool.';
 
 export function createId(prefix = 'id') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

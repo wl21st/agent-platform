@@ -1,5 +1,6 @@
 import {
   COSMETIC_SAFE_CHECK_AGENT,
+  INGREDIENTS_SCRAPE_AGENT,
   SEARCH_AGENT,
   WEATHER_AGENT,
   WEBPAGE_SUMMARIZE_AGENT,
@@ -8,9 +9,10 @@ import {
   type WeatherContext,
 } from '@/lib/agent-chat';
 import { runCosmeticSafeCheckAgent } from '@backend/agents/cosmeticSafeCheckAgent';
+import { runIngredientsScrapeAgent } from '@backend/agents/ingredientsScrapeAgent';
 import { runWebpageSummarizeAgent } from '@backend/agents/webpageSummarizeAgent';
 
-export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check';
+export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape';
 
 export interface ToolExecutionContext {
   input: string;
@@ -389,6 +391,17 @@ export const TOOL_REGISTRY: Record<ToolRoute, ToolDefinition> = {
     execute: runCosmeticSafeCheckAgent,
     buildPreferenceUpdates: () => ({
       lastUsedAgent: COSMETIC_SAFE_CHECK_AGENT.name,
+    }),
+  },
+  'ingredients-scrape': {
+    route: 'ingredients-scrape',
+    taskId: 'ingredients-scrape-tool',
+    taskDescription: 'Scrape product ingredients from a URL and analyze safety using Ingredients Scrape Agent',
+    keywords: /(scrape\s*ingredient|ingredient.*scrape|extract\s*ingredient|ingredient.*extract|ingredient.*url|ingredient.*from.*http|product\s*ingredient.*http|scrape.*cosmetic|提取.*成分|成分.*提取|爬取.*成分)/i,
+    agentName: INGREDIENTS_SCRAPE_AGENT.name,
+    execute: runIngredientsScrapeAgent,
+    buildPreferenceUpdates: () => ({
+      lastUsedAgent: INGREDIENTS_SCRAPE_AGENT.name,
     }),
   },
 };

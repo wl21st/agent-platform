@@ -113,14 +113,17 @@ export default function ChatInterface() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isNearBottom, setIsNearBottom] = useState(true);
+  const isNearBottomRef = useRef(true);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = useCallback(() => {
-    const container = messagesContainerRef.current;
-    if (container) {
-      container.scrollTop = container.scrollHeight;
-    }
+    requestAnimationFrame(() => {
+      const container = messagesContainerRef.current;
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+      }
+    });
   }, []);
 
   const handleScroll = useCallback(() => {
@@ -128,15 +131,16 @@ export default function ChatInterface() {
     if (container) {
       const threshold = 100; // pixels from bottom
       const isNear = container.scrollTop + container.clientHeight >= container.scrollHeight - threshold;
+      isNearBottomRef.current = isNear;
       setIsNearBottom(isNear);
     }
   }, []);
 
   useEffect(() => {
-    if (isNearBottom) {
+    if (isNearBottomRef.current) {
       scrollToBottom();
     }
-  }, [messages, isNearBottom, scrollToBottom]);
+  }, [messages, scrollToBottom]);
 
   const loadSession = useCallback(async (nextSessionId: string) => {
     const response = await fetch(`/api/session/${nextSessionId}`);
@@ -227,6 +231,35 @@ export default function ChatInterface() {
       return;
     }
 
+    if (event.type === 'agent-done') {
+      // Insert a completed agent message before the streaming placeholder.
+      // This allows multiple agents to show separate chat bubbles.
+      setMessages((current) => {
+        const placeholderIndex = current.findIndex((m) => m.id === assistantMessageId);
+        const completedMessage: ChatMessage = {
+          ...event.message,
+          status: 'done',
+        };
+
+        if (placeholderIndex >= 0) {
+          // Insert the agent's message before the placeholder and reset placeholder content
+          const before = current.slice(0, placeholderIndex);
+          const placeholder = current[placeholderIndex];
+          const after = current.slice(placeholderIndex + 1);
+          return [
+            ...before,
+            completedMessage,
+            { ...placeholder, content: '', status: 'streaming' },
+            ...after,
+          ];
+        }
+
+        // Fallback: append at end
+        return [...current, completedMessage];
+      });
+      return;
+    }
+
     if (event.type === 'done') {
       setTasks(event.tasks);
       setMessages((current) =>
@@ -282,6 +315,8 @@ export default function ChatInterface() {
       status: 'streaming',
     };
 
+    isNearBottomRef.current = true;
+    setIsNearBottom(true);
     setMessages((current) => [...current, userMessage, assistantPlaceholder]);
     setInputValue('');
     setIsStreaming(true);
@@ -403,9 +438,9 @@ export default function ChatInterface() {
         </div>
       </div>
 
-      <div className="flex flex-1 pt-16">
+      <div className="flex flex-1 min-h-0 pt-16">
         {/* Active Tasks Column */}
-        <div className={`${isCollapsed ? 'w-12' : 'w-72'} border-r border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800 transition-all duration-300 flex flex-col h-full`}>
+        <div className={`${isCollapsed ? 'w-12' : 'w-72'} border-r border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800 transition-all duration-300 flex flex-col min-h-0`}>
           <div className="flex items-center justify-between p-5 pb-1 border-b border-gray-200 dark:border-gray-700">
             {!isCollapsed && <h3 className="font-semibold text-gray-800 dark:text-gray-200">Active Tasks</h3>}
             <button
@@ -451,8 +486,8 @@ export default function ChatInterface() {
         </div>
 
         {/* Chat Column */}
-        <div className="flex flex-1 flex-col">
-          <div className="flex-1 space-y-4 overflow-y-auto p-4" ref={messagesContainerRef} onScroll={handleScroll}>
+        <div className="flex flex-1 flex-col min-h-0">
+          <div className="flex-1 space-y-4 overflow-y-auto p-4 min-h-0" ref={messagesContainerRef} onScroll={handleScroll}>
             {messages.map((message) => (
               <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div
@@ -460,7 +495,7 @@ export default function ChatInterface() {
                     message.role === 'user'
                       ? 'bg-blue-500 text-white'
                       : 'bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-gray-100'
-                  }`}
+                  } overflow-hidden`}
                 >
                   {message.role === 'assistant' && message.agent && (
                     <div className="mb-2 flex items-center gap-2 border-b border-gray-200 pb-2 dark:border-gray-600">
@@ -476,21 +511,26 @@ export default function ChatInterface() {
                     </div>
                   )}
 
-                  <div className="text-sm">
+                  <div className="text-sm break-words">
                     {message.role === 'user' ? (
-                      <p>{message.content}</p>
+                      <p className="break-all">{message.content}</p>
                     ) : (
                       <div className="prose prose-sm max-w-none dark:prose-invert">
                         <ReactMarkdown
                           components={{
                             h1: ({ children }) => <h1 className="mb-2 text-lg font-bold">{children}</h1>,
                             h2: ({ children }) => <h2 className="mb-1 text-base font-semibold">{children}</h2>,
-                            p: ({ children }) => <p className="mb-2">{children}</p>,
+                            p: ({ children }) => <p className="mb-2 break-words">{children}</p>,
                             ul: ({ children }) => <ul className="mb-2 list-inside list-disc">{children}</ul>,
-                            ol: ({ children }) => <ul className="mb-2 list-inside list-decimal">{children}</ul>,
-                            li: ({ children }) => <li className="mb-1">{children}</li>,
+                            ol: ({ children }) => <ol className="mb-2 list-inside list-decimal">{children}</ol>,
+                            li: ({ children }) => <li className="mb-1 break-words">{children}</li>,
+                            pre: ({ children }) => (
+                              <pre className="mb-2 overflow-x-auto whitespace-pre-wrap break-words rounded bg-gray-200 p-2 text-xs dark:bg-gray-600">
+                                {children}
+                              </pre>
+                            ),
                             code: ({ children }) => (
-                              <code className="rounded bg-gray-200 px-1 py-0.5 text-xs dark:bg-gray-600">
+                              <code className="rounded bg-gray-200 px-1 py-0.5 text-xs break-words dark:bg-gray-600">
                                 {children}
                               </code>
                             ),

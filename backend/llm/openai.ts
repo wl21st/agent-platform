@@ -27,14 +27,14 @@ function getOpenAIClient() {
 
 export interface IntentClassification {
   /** Which tool should be invoked (or 'none' for direct LLM response) */
-  tool: 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'none';
+  tool: 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'none';
   /** Extracted city / location (weather queries only) */
   location?: string;
   /** current day or tomorrow (weather queries only) */
   timeframe?: 'current' | 'tomorrow';
   /** Search query text (search queries only) */
   searchQuery?: string;
-  /** Extracted URL (webpage-summarize queries only) */
+  /** Extracted URL (webpage-summarize / ingredients-scrape queries) */
   url?: string;
   /** Whether this message is a follow-up to the previous conversation */
   isFollowUp: boolean;
@@ -52,6 +52,10 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     '  cosmetic-safe-check — For analyzing cosmetic/skincare product ingredients for safety risks.',
     '                        Trigger when the user provides a list of cosmetic ingredients or asks about',
     '                        ingredient safety, product safety, or skincare ingredient analysis.',
+    '  ingredients-scrape  — For scraping/extracting product ingredients from a URL and running a safety check.',
+    '                        Trigger when the user asks to scrape, extract, or get ingredients from a product',
+    '                        URL/webpage, or wants to check a cosmetic product page for ingredient safety.',
+    '                        Extract the URL into the "url" field.',
     '  none               — For follow-up questions, conversational messages, temperature conversions,',
     '                        greetings, or anything that can be answered from context.',
     '',
@@ -66,10 +70,14 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     '  set tool to "webpage-summarize" and extract the full URL into the "url" field.',
     '  This includes messages like "summarize https://...", "what does this page say: https://..."',
     '  or simply pasting a URL.',
+    '- If the user provides a URL and asks to scrape/extract/get ingredients or check a product,',
+    '  set tool to "ingredients-scrape" and extract the full URL into the "url" field.',
+    '  This includes messages like "scrape ingredients from https://...", "check this product: https://..."',
+    '  or "what ingredients are in https://...".',
     '- For greetings, general chat, or follow-up questions, set tool to "none".',
     '',
     'You MUST respond ONLY with a valid JSON object, nothing else. Example:',
-    '{"tool":"webpage-summarize","url":"https://example.com","location":"","timeframe":"","searchQuery":"","isFollowUp":false}',
+    '{"tool":"ingredients-scrape","url":"https://example.com/product","location":"","timeframe":"","searchQuery":"","isFollowUp":false}',
   ];
 
   if (preferences.preferredWeatherLocation) {
@@ -181,7 +189,7 @@ export async function classifyUserIntent(params: {
     const parsed = JSON.parse(jsonText) as IntentClassification;
 
     // Validate
-    if (!['weather', 'search', 'webpage-summarize', 'cosmetic-safe-check', 'none'].includes(parsed.tool)) {
+    if (!['weather', 'search', 'webpage-summarize', 'cosmetic-safe-check', 'ingredients-scrape', 'none'].includes(parsed.tool)) {
       return null;
     }
 
@@ -198,7 +206,7 @@ export async function classifyUserIntent(params: {
 
 function buildResponseSystemPrompt(preferences: UserPreferences): string {
   const lines: string[] = [
-    'You are a helpful orchestration assistant. You help users with weather, search, webpage summarization, and general questions.',
+    'You are a helpful orchestration assistant. You help users with weather, search, webpage summarization, ingredient scraping, cosmetic safety checks, and general questions.',
     '',
     'Rules for conversation continuity:',
     '- ALWAYS use the full conversation history to understand context.',
@@ -226,6 +234,12 @@ function buildResponseSystemPrompt(preferences: UserPreferences): string {
     '- You may add a brief conversational intro and any additional context about specific ingredients.',
     '- Emphasize high-risk ingredients and explain why they should be avoided.',
     '- If the user asks follow-up questions about specific ingredients, answer from context.',
+    '',
+    'Rules for ingredient scraping responses:',
+    '- When presenting ingredient scrape results, present the combined report (extracted ingredients + safety analysis) as-is.',
+    '- You may add a brief conversational intro explaining what was found.',
+    '- Highlight any high-risk ingredients and recommend safer alternatives when relevant.',
+    '- If no ingredients were found, suggest the user try a different URL or provide ingredients manually.',
   ];
 
   if (preferences.preferredWeatherLocation) {
@@ -392,13 +406,24 @@ export async function generateAssistantResponse(params: {
     let toolSuffix: string | undefined;
     if (params.toolResult) {
       const isWebpageSummary = params.toolResult.agent.id === 'webpage-summarize';
-      const presentationInstruction = isWebpageSummary
-        ? [
-            'Summarize this webpage content using the structured markdown format specified in the system prompt.',
-            'Include: a brief overview, Key Points (bullet list), Details (if warranted), and an Overall Takeaway.',
-            'Use bold for important terms. Be concise yet informative.',
-          ].join(' ')
-        : 'Present this information naturally to the user. Use markdown formatting.';
+      const isIngredientsScrape = params.toolResult.agent.id === 'ingredients-scrape';
+      let presentationInstruction: string;
+      if (isWebpageSummary) {
+        presentationInstruction = [
+          'Summarize this webpage content using the structured markdown format specified in the system prompt.',
+          'Include: a brief overview, Key Points (bullet list), Details (if warranted), and an Overall Takeaway.',
+          'Use bold for important terms. Be concise yet informative.',
+        ].join(' ');
+      } else if (isIngredientsScrape) {
+        presentationInstruction = [
+          'Present this ingredient scraping and safety analysis report to the user.',
+          'Keep the extracted ingredients list and safety report as-is.',
+          'Add a brief conversational intro explaining what was found.',
+          'Highlight any high-risk ingredients and recommend safer alternatives.',
+        ].join(' ');
+      } else {
+        presentationInstruction = 'Present this information naturally to the user. Use markdown formatting.';
+      }
 
       toolSuffix = [
         '---',

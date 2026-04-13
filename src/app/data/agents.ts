@@ -62,5 +62,12 @@ export const agents: Agent[] = [
     description: 'Analyzes cosmetic and skincare product ingredients for safety risks. Provides a risk rating (high, medium, low) and highlights harmful ingredients with detailed explanations.',
     capabilities: ['Ingredient safety analysis', 'Risk rating', 'Harmful ingredient detection', 'Safety recommendations'],
     icon: '🧴'
+  },
+  {
+    id: 'ingredients-scrape',
+    name: 'Ingredients Scrape Agent',
+    description: 'Scrapes product ingredients from a given URL and automatically runs a cosmetic safety check. Extracts ingredient lists from product pages using multiple strategies (JSON-LD, HTML patterns, plain text).',
+    capabilities: ['URL ingredient extraction', 'HTML scraping', 'Automatic safety analysis', 'Multi-strategy parsing'],
+    icon: '🔬'
   }
 ];
