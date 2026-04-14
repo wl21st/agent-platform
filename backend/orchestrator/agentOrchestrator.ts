@@ -271,6 +271,7 @@ async function executeToolNode(state: OrchestratorStateType) {
     extractedTimeframe: state.intent.timeframe || undefined,
     extractedSearchQuery: state.intent.searchQuery || undefined,
     extractedUrl: state.intent.url || undefined,
+    extractedTicker: state.intent.ticker || undefined,
   });
 
   return {

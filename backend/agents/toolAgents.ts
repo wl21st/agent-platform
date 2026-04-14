@@ -2,6 +2,7 @@ import {
   COSMETIC_SAFE_CHECK_AGENT,
   INGREDIENTS_SCRAPE_AGENT,
   SEARCH_AGENT,
+  STOCK_DATA_AGENT,
   WEATHER_AGENT,
   WEBPAGE_SUMMARIZE_AGENT,
   type AgentSummary,
@@ -10,9 +11,10 @@ import {
 } from '@/lib/agent-chat';
 import { runCosmeticSafeCheckAgent } from '@backend/agents/cosmeticSafeCheckAgent';
 import { runIngredientsScrapeAgent } from '@backend/agents/ingredientsScrapeAgent';
+import { runStockDataAgent } from '@backend/agents/stockDataAgent';
 import { runWebpageSummarizeAgent } from '@backend/agents/webpageSummarizeAgent';
 
-export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape';
+export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data';
 
 export interface ToolExecutionContext {
   input: string;
@@ -25,6 +27,8 @@ export interface ToolExecutionContext {
   extractedSearchQuery?: string;
   /** LLM-extracted URL override (webpage-summarize queries) */
   extractedUrl?: string;
+  /** LLM-extracted stock ticker symbol (stock-data queries) */
+  extractedTicker?: string;
 }
 
 export interface ToolExecutionResult {
@@ -402,6 +406,17 @@ export const TOOL_REGISTRY: Record<ToolRoute, ToolDefinition> = {
     execute: runIngredientsScrapeAgent,
     buildPreferenceUpdates: () => ({
       lastUsedAgent: INGREDIENTS_SCRAPE_AGENT.name,
+    }),
+  },
+  'stock-data': {
+    route: 'stock-data',
+    taskId: 'stock-data-tool',
+    taskDescription: 'Fetch financial statements and analyze stock data using Stock Data Agent',
+    keywords: /(stock|股票|财报|财务|balance\s*sheet|income\s*statement|cash\s*flow|financial|earnings|revenue|利润|资产负债|现金流|年报|季报|\$[A-Za-z]{1,6}\b|ticker)/i,
+    agentName: STOCK_DATA_AGENT.name,
+    execute: runStockDataAgent,
+    buildPreferenceUpdates: () => ({
+      lastUsedAgent: STOCK_DATA_AGENT.name,
     }),
   },
 };

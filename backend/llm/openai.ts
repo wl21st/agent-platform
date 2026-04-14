@@ -27,7 +27,7 @@ function getOpenAIClient() {
 
 export interface IntentClassification {
   /** Which tool should be invoked (or 'none' for direct LLM response) */
-  tool: 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'none';
+  tool: 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data' | 'none';
   /** Extracted city / location (weather queries only) */
   location?: string;
   /** current day or tomorrow (weather queries only) */
@@ -36,6 +36,8 @@ export interface IntentClassification {
   searchQuery?: string;
   /** Extracted URL (webpage-summarize / ingredients-scrape queries) */
   url?: string;
+  /** Extracted stock ticker symbol (stock-data queries only) */
+  ticker?: string;
   /** Whether this message is a follow-up to the previous conversation */
   isFollowUp: boolean;
 }
@@ -56,6 +58,10 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     '                        Trigger when the user asks to scrape, extract, or get ingredients from a product',
     '                        URL/webpage, or wants to check a cosmetic product page for ingredient safety.',
     '                        Extract the URL into the "url" field.',
+    '  stock-data          — For stock financial analysis. Trigger when the user asks about a stock\'s financials,',
+    '                        financial statements (income statement, balance sheet, cash flow), stock analysis,',
+    '                        earnings, revenue, profit margins, or mentions a ticker symbol (e.g. AAPL, $MSFT, 600519).',
+    '                        Extract the ticker symbol into the "ticker" field.',
     '  none               — For follow-up questions, conversational messages, temperature conversions,',
     '                        greetings, or anything that can be answered from context.',
     '',
@@ -74,10 +80,13 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     '  set tool to "ingredients-scrape" and extract the full URL into the "url" field.',
     '  This includes messages like "scrape ingredients from https://...", "check this product: https://..."',
     '  or "what ingredients are in https://...".',
+    '- If the user asks about stock financials, financial statements, earnings, revenue, profit margins,',
+    '  or mentions a ticker symbol (like $AAPL, MSFT, GOOGL, 600519, 0700.HK), set tool to "stock-data".',
+    '  Extract the ticker symbol into the "ticker" field. Do NOT include the $ sign.',
     '- For greetings, general chat, or follow-up questions, set tool to "none".',
     '',
     'You MUST respond ONLY with a valid JSON object, nothing else. Example:',
-    '{"tool":"ingredients-scrape","url":"https://example.com/product","location":"","timeframe":"","searchQuery":"","isFollowUp":false}',
+    '{"tool":"stock-data","ticker":"AAPL","url":"","location":"","timeframe":"","searchQuery":"","isFollowUp":false}',
   ];
 
   if (preferences.preferredWeatherLocation) {
@@ -189,7 +198,7 @@ export async function classifyUserIntent(params: {
     const parsed = JSON.parse(jsonText) as IntentClassification;
 
     // Validate
-    if (!['weather', 'search', 'webpage-summarize', 'cosmetic-safe-check', 'ingredients-scrape', 'none'].includes(parsed.tool)) {
+    if (!['weather', 'search', 'webpage-summarize', 'cosmetic-safe-check', 'ingredients-scrape', 'stock-data', 'none'].includes(parsed.tool)) {
       return null;
     }
 
@@ -206,7 +215,7 @@ export async function classifyUserIntent(params: {
 
 function buildResponseSystemPrompt(preferences: UserPreferences): string {
   const lines: string[] = [
-    'You are a helpful orchestration assistant. You help users with weather, search, webpage summarization, ingredient scraping, cosmetic safety checks, and general questions.',
+    'You are a helpful orchestration assistant. You help users with weather, search, webpage summarization, ingredient scraping, cosmetic safety checks, stock financial analysis, and general questions.',
     '',
     'Rules for conversation continuity:',
     '- ALWAYS use the full conversation history to understand context.',
@@ -240,6 +249,15 @@ function buildResponseSystemPrompt(preferences: UserPreferences): string {
     '- You may add a brief conversational intro explaining what was found.',
     '- Highlight any high-risk ingredients and recommend safer alternatives when relevant.',
     '- If no ingredients were found, suggest the user try a different URL or provide ingredients manually.',
+    '',
+    'Rules for stock financial analysis responses:',
+    '- When presenting stock financial data, present the tool result markdown (financial statements, ratios, analysis) as-is.',
+    '- You may add a brief conversational intro explaining the company and its financial overview.',
+    '- Provide a summary covering: core business logic, valuation assessment, key risk factors, and investment recommendation.',
+    '- Highlight any red flags (e.g. declining margins, high leverage, negative cash flow).',
+    '- Compare key metrics against industry benchmarks when possible.',
+    '- Always include a disclaimer that this is not investment advice.',
+    '- If the user asks follow-up about specific financial metrics, answer from the provided context.',
   ];
 
   if (preferences.preferredWeatherLocation) {
@@ -407,8 +425,17 @@ export async function generateAssistantResponse(params: {
     if (params.toolResult) {
       const isWebpageSummary = params.toolResult.agent.id === 'webpage-summarize';
       const isIngredientsScrape = params.toolResult.agent.id === 'ingredients-scrape';
+      const isStockData = params.toolResult.agent.id === 'stock-data';
       let presentationInstruction: string;
-      if (isWebpageSummary) {
+      if (isStockData) {
+        presentationInstruction = [
+          'Present this stock financial analysis report to the user.',
+          'Keep the financial data tables and analysis as-is.',
+          'Add a brief conversational intro about the company.',
+          'Provide a comprehensive summary covering: core business logic, valuation, key risk points, and investment recommendation.',
+          'Always include a disclaimer that this is not investment advice.',
+        ].join(' ');
+      } else if (isWebpageSummary) {
         presentationInstruction = [
           'Summarize this webpage content using the structured markdown format specified in the system prompt.',
           'Include: a brief overview, Key Points (bullet list), Details (if warranted), and an Overall Takeaway.',

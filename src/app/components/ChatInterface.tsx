@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import {
   ORCHESTRATOR_AGENT,
@@ -491,10 +492,10 @@ export default function ChatInterface() {
             {messages.map((message) => (
               <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div
-                  className={`max-w-xs rounded-lg px-4 py-3 lg:max-w-2xl ${
+                  className={`rounded-lg px-4 py-3 ${
                     message.role === 'user'
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-gray-100'
+                      ? 'max-w-xs lg:max-w-2xl bg-blue-500 text-white'
+                      : 'max-w-[90%] bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-gray-100'
                   } overflow-hidden`}
                 >
                   {message.role === 'assistant' && message.agent && (
@@ -517,9 +518,11 @@ export default function ChatInterface() {
                     ) : (
                       <div className="prose prose-sm max-w-none dark:prose-invert">
                         <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
                           components={{
                             h1: ({ children }) => <h1 className="mb-2 text-lg font-bold">{children}</h1>,
                             h2: ({ children }) => <h2 className="mb-1 text-base font-semibold">{children}</h2>,
+                            h3: ({ children }) => <h3 className="mb-1 text-sm font-semibold">{children}</h3>,
                             p: ({ children }) => <p className="mb-2 break-words">{children}</p>,
                             ul: ({ children }) => <ul className="mb-2 list-inside list-disc">{children}</ul>,
                             ol: ({ children }) => <ol className="mb-2 list-inside list-decimal">{children}</ol>,
@@ -534,6 +537,30 @@ export default function ChatInterface() {
                                 {children}
                               </code>
                             ),
+                            table: ({ children }) => (
+                              <div className="mb-3 overflow-x-auto rounded border border-gray-200 dark:border-gray-600">
+                                <table className="min-w-full text-xs">{children}</table>
+                              </div>
+                            ),
+                            thead: ({ children }) => (
+                              <thead className="bg-gray-200 dark:bg-gray-600">{children}</thead>
+                            ),
+                            tbody: ({ children }) => <tbody>{children}</tbody>,
+                            tr: ({ children }) => (
+                              <tr className="border-b border-gray-200 dark:border-gray-600">{children}</tr>
+                            ),
+                            th: ({ children }) => (
+                              <th className="whitespace-nowrap px-3 py-1.5 text-left font-semibold">{children}</th>
+                            ),
+                            td: ({ children }) => (
+                              <td className="whitespace-nowrap px-3 py-1 font-mono">{children}</td>
+                            ),
+                            blockquote: ({ children }) => (
+                              <blockquote className="mb-2 border-l-4 border-yellow-400 bg-yellow-50 py-1 pl-3 text-xs italic text-gray-700 dark:border-yellow-600 dark:bg-yellow-900/30 dark:text-gray-300">
+                                {children}
+                              </blockquote>
+                            ),
+                            hr: () => <hr className="my-3 border-gray-300 dark:border-gray-600" />,
                           }}
                         >
                           {message.content || (message.status === 'streaming' ? '_Waiting for streamed output..._' : '')}

@@ -69,5 +69,12 @@ export const agents: Agent[] = [
     description: 'Scrapes product ingredients from a given URL and automatically runs a cosmetic safety check. Extracts ingredient lists from product pages using multiple strategies (JSON-LD, HTML patterns, plain text).',
     capabilities: ['URL ingredient extraction', 'HTML scraping', 'Automatic safety analysis', 'Multi-strategy parsing'],
     icon: '🔬'
+  },
+  {
+    id: 'stock-data',
+    name: 'Stock Data Agent',
+    description: 'Fetches and analyzes financial statements (income statement, balance sheet, cash flow) for any publicly traded stock. Provides comprehensive financial analysis including profitability ratios, leverage metrics, cash flow quality, and investment considerations.',
+    capabilities: ['Income statement analysis', 'Balance sheet analysis', 'Cash flow analysis', 'Financial ratio calculation', 'Risk assessment', 'Investment recommendations'],
+    icon: '📊'
   }
 ];
