@@ -27,7 +27,7 @@ function getOpenAIClient() {
 
 export interface IntentClassification {
   /** Which tool should be invoked (or 'none' for direct LLM response) */
-  tool: 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data' | 'none';
+  tool: 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data' | 'news-scrape' | 'news-summary' | 'none';
   /** Extracted city / location (weather queries only) */
   location?: string;
   /** current day or tomorrow (weather queries only) */
@@ -38,6 +38,8 @@ export interface IntentClassification {
   url?: string;
   /** Extracted stock ticker symbol (stock-data queries only) */
   ticker?: string;
+  /** Extracted news URLs (news-summary queries) */
+  newsUrls?: Array<{url: string, title: string}>;
   /** Whether this message is a follow-up to the previous conversation */
   isFollowUp: boolean;
 }
@@ -62,6 +64,12 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     '                        financial statements (income statement, balance sheet, cash flow), stock analysis,',
     '                        earnings, revenue, profit margins, or mentions a ticker symbol (e.g. AAPL, $MSFT, 600519).',
     '                        Extract the ticker symbol into the "ticker" field.',
+    '  news-scrape         — For searching and scraping recent news articles about a stock. Trigger when the user',
+    '                        asks for news, articles, headlines, or recent developments about a specific stock.',
+    '                        Extract the ticker symbol into the "ticker" field.',
+    '  news-summary        — For summarizing multiple news articles and analyzing overall sentiment. Trigger when',
+    '                        the user asks to summarize news, analyze sentiment, or wants an overall news assessment.',
+    '                        Extract news URLs into the "newsUrls" field if provided.',
     '  none               — For follow-up questions, conversational messages, temperature conversions,',
     '                        greetings, or anything that can be answered from context.',
     '',
@@ -198,7 +206,7 @@ export async function classifyUserIntent(params: {
     const parsed = JSON.parse(jsonText) as IntentClassification;
 
     // Validate
-    if (!['weather', 'search', 'webpage-summarize', 'cosmetic-safe-check', 'ingredients-scrape', 'stock-data', 'none'].includes(parsed.tool)) {
+    if (!['weather', 'search', 'webpage-summarize', 'cosmetic-safe-check', 'ingredients-scrape', 'stock-data', 'news-scrape', 'news-summary', 'none'].includes(parsed.tool)) {
       return null;
     }
 

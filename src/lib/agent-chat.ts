@@ -1,4 +1,4 @@
-export type AgentId = 'orchestrator' | 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data';
+export type AgentId = 'orchestrator' | 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data' | 'news-scrape' | 'news-summary';
 
 export interface AgentSummary {
   id: AgentId;
@@ -124,8 +124,20 @@ export const STOCK_DATA_AGENT: AgentSummary = {
   icon: '📊',
 };
 
+export const NEWS_SCRAPE_AGENT: AgentSummary = {
+  id: 'news-scrape',
+  name: 'News Scrape Agent',
+  icon: '📰',
+};
+
+export const NEWS_SUMMARY_AGENT: AgentSummary = {
+  id: 'news-summary',
+  name: 'News Summary Agent',
+  icon: '📝',
+};
+
 export const INITIAL_ASSISTANT_GREETING =
-  'Hello! I\'m the Orchestrator Agent. Ask for weather, search, webpage summary, cosmetic ingredient safety check, ingredient scraping from a product URL, stock financial analysis, or general help and I\'ll route the request to the best tool.';
+  'Hello! I\'m the Orchestrator Agent. Ask for weather, search, webpage summary, cosmetic ingredient safety check, ingredient scraping from a product URL, stock financial analysis, news scraping, news summary, or general help and I\'ll route the request to the best tool.';
 
 export function createId(prefix = 'id') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

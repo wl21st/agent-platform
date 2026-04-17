@@ -3,6 +3,8 @@ import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import {
   COSMETIC_SAFE_CHECK_AGENT,
   INGREDIENTS_SCRAPE_AGENT,
+  NEWS_SCRAPE_AGENT,
+  NEWS_SUMMARY_AGENT,
   ORCHESTRATOR_AGENT,
   chunkText,
   createMessage,
@@ -18,6 +20,8 @@ import {
   buildCombinedScrapeAndSafetyResult,
   scrapeIngredientsOnly,
 } from '@backend/agents/ingredientsScrapeAgent';
+import { runNewsScrapeAgent } from '@backend/agents/newsScrapeAgent';
+import { runNewsSummaryAgent } from '@backend/agents/newsSummaryAgent';
 import {
   getToolDefinition,
   resolveToolRouteWithContext,
@@ -272,6 +276,7 @@ async function executeToolNode(state: OrchestratorStateType) {
     extractedSearchQuery: state.intent.searchQuery || undefined,
     extractedUrl: state.intent.url || undefined,
     extractedTicker: state.intent.ticker || undefined,
+    extractedNewsUrls: state.intent.newsUrls || undefined,
   });
 
   return {
@@ -347,6 +352,175 @@ function buildHistory(session: ReturnType<typeof getOrCreateSession>) {
     agentName: message.agent?.name,
     timestamp: message.timestamp,
   }));
+}
+
+/**
+ * News-summary two-step workflow.
+ *
+ * Runs news scraping and summary analysis as separate visible tasks with
+ * intermediate streaming. Each agent's result is shown as a distinct
+ * chat bubble so the user can clearly see which agent did what:
+ *
+ *   📰 News Scrape Agent → scraped news articles
+ *   📝 News Summary Agent → sentiment analysis and summary
+ */
+async function* streamNewsSummaryWorkflow(params: {
+  sessionId: string;
+  input: string;
+  intent: IntentClassification;
+  preferences: UserPreferences;
+  history: ConversationTurn[];
+}): AsyncGenerator<StreamEvent> {
+  const { sessionId, input, intent, preferences, history } = params;
+
+  /* ── Step 1: Build initial task list ────────────────────────────────── */
+  let tasks: TaskStatus[] = [
+    {
+      id: 'parse-intent',
+      description: 'LLM intent classification',
+      status: 'completed',
+      agent: ORCHESTRATOR_AGENT.name,
+    },
+    {
+      id: 'news-scrape-tool',
+      description: 'Scrape recent news articles for the stock',
+      status: 'running',
+      agent: NEWS_SCRAPE_AGENT.name,
+    },
+    {
+      id: 'news-summary-sub',
+      description: 'Analyze news sentiment and provide summary',
+      status: 'pending',
+      agent: NEWS_SUMMARY_AGENT.name,
+    },
+    {
+      id: 'compose-response',
+      description: 'LLM response generation',
+      status: 'pending',
+      agent: ORCHESTRATOR_AGENT.name,
+    },
+  ];
+
+  yield { type: 'tasks', tasks };
+
+  /* ── Step 2: Run News Scrape Agent ────────────────────────────── */
+  const toolContext = {
+    input,
+    preferences,
+    extractedTicker: intent.ticker || undefined,
+  };
+
+  const scrapeResult = await runNewsScrapeAgent(toolContext);
+
+  const initialNewsItems = scrapeResult.metadata.newsItems as Array<{title: string, url: string, publishedDate: string}> | undefined;
+  tasks = markTask(tasks, 'news-scrape-tool', initialNewsItems?.length ? 'completed' : 'failed');
+  yield { type: 'tasks', tasks };
+
+  /* ── Emit the scrape result as its own chat bubble ──────────────────── */
+  const scrapeMessage = createMessage({
+    role: 'assistant',
+    content: scrapeResult.markdown,
+    agent: NEWS_SCRAPE_AGENT,
+    status: 'done',
+  });
+  appendMessage(sessionId, scrapeMessage);
+  yield { type: 'agent-done', message: scrapeMessage };
+
+  if (!initialNewsItems?.length) {
+    /* ── No news found — skip summary ─────────────────────── */
+    tasks = markTask(tasks, 'news-summary-sub', 'failed');
+    tasks = markTask(tasks, 'compose-response', 'completed');
+    yield { type: 'tasks', tasks };
+
+    const updatedSession = updatePreferences(
+      sessionId,
+      derivePreferenceUpdates(input, 'news-scrape', scrapeResult, preferences),
+    );
+
+    const failMessage = createMessage({
+      role: 'assistant',
+      content: 'No news articles were found for the specified stock, so the news summary analysis could not be performed. Please try a different ticker symbol or check back later.',
+      agent: ORCHESTRATOR_AGENT,
+    });
+    appendMessage(sessionId, failMessage);
+
+    for (const delta of chunkText(failMessage.content)) {
+      yield { type: 'message', delta, agent: ORCHESTRATOR_AGENT };
+      await pause(35);
+    }
+
+    yield {
+      type: 'done',
+      message: failMessage,
+      tasks,
+      preferences: updatedSession.preferences,
+    };
+    return;
+  }
+
+  /* ── Step 3: Run News Summary Agent ───────────────────────────── */
+  tasks = markTask(tasks, 'news-summary-sub', 'running');
+  yield { type: 'tasks', tasks };
+
+  const newsItems = scrapeResult.metadata.newsItems as Array<{title: string, url: string, publishedDate: string}>;
+  const extractedNewsUrls = newsItems.map(item => ({ url: item.url, title: item.title }));
+
+  const summaryResult = await runNewsSummaryAgent({
+    ...toolContext,
+    extractedNewsUrls,
+  });
+
+  tasks = markTask(tasks, 'news-summary-sub', 'completed');
+  yield { type: 'tasks', tasks };
+
+  /* ── Step 4: LLM Response Generation ────────────────────────────────── */
+  tasks = markTask(tasks, 'compose-response', 'running');
+  yield { type: 'tasks', tasks };
+
+  // Pass only the summary result to the LLM — news scrape is already shown above
+  const response = await generateAssistantResponse({
+    input,
+    toolResult: summaryResult,
+    preferences,
+    history,
+  });
+
+  tasks = markTask(tasks, 'compose-response', 'completed');
+  yield { type: 'tasks', tasks };
+
+  /* ── Step 5: Update preferences ─────────────────────────────────────── */
+  const combinedToolResult = {
+    ...summaryResult,
+    metadata: {
+      ...summaryResult.metadata,
+      ...scrapeResult.metadata,
+    },
+  };
+  const updatedSession = updatePreferences(
+    sessionId,
+    derivePreferenceUpdates(input, 'news-summary', combinedToolResult, preferences),
+  );
+
+  /* ── Step 6: Stream the summary analysis as the LLM response ─────────── */
+  const assistantMessage = createMessage({
+    role: 'assistant',
+    content: response,
+    agent: NEWS_SUMMARY_AGENT,
+  });
+
+  for (const delta of chunkText(response)) {
+    yield { type: 'message', delta, agent: NEWS_SUMMARY_AGENT };
+    await pause(35);
+  }
+
+  appendMessage(sessionId, assistantMessage);
+
+  yield {
+    type: 'done',
+    message: assistantMessage,
+    tasks,
+    preferences: updatedSession.preferences,
+  };
 }
 
 /**
@@ -562,6 +736,17 @@ export async function* streamOrchestratorSession(params: {
   /* ── Route to the appropriate workflow ───────────────────────────────── */
   if (intent.tool === 'ingredients-scrape') {
     yield* streamIngredientsScrapeWorkflow({
+      sessionId,
+      input: params.input,
+      intent,
+      preferences: session.preferences,
+      history,
+    });
+    return;
+  }
+
+  if (intent.tool === 'news-summary') {
+    yield* streamNewsSummaryWorkflow({
       sessionId,
       input: params.input,
       intent,

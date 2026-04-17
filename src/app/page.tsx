@@ -13,6 +13,7 @@ type View = 'agents' | 'chat' | 'jobs';
 export default function Home() {
   const [currentView, setCurrentView] = useState<View>('agents');
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   const handleViewChange = (view: View) => {
     setCurrentView(view);
@@ -21,8 +22,12 @@ export default function Home() {
     }
   };
 
-  const handleSelectAgent = (agent: Agent) => {
+  const handleSelectAgent = (agent: Agent | null) => {
     setSelectedAgent(agent);
+  };
+
+  const handleDeselect = () => {
+    setSelectedAgent(null);
   };
 
   return (
@@ -38,12 +43,15 @@ export default function Home() {
             agents={agents}
             selectedAgent={selectedAgent}
             onSelectAgent={handleSelectAgent}
+            onDeselect={handleDeselect}
+            isOpen={isSidebarOpen}
+            onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
           />
         )}
 
         {/* Right Column - Agent Details, Chat, or Jobs */}
         {currentView === 'agents' ? (
-          <AgentDetails agent={selectedAgent} />
+          <AgentDetails agent={selectedAgent} agents={agents} onSelectAgent={handleSelectAgent} />
         ) : currentView === 'chat' ? (
           <ChatInterface />
         ) : (

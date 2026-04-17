@@ -1,6 +1,8 @@
 import {
   COSMETIC_SAFE_CHECK_AGENT,
   INGREDIENTS_SCRAPE_AGENT,
+  NEWS_SCRAPE_AGENT,
+  NEWS_SUMMARY_AGENT,
   SEARCH_AGENT,
   STOCK_DATA_AGENT,
   WEATHER_AGENT,
@@ -11,10 +13,12 @@ import {
 } from '@/lib/agent-chat';
 import { runCosmeticSafeCheckAgent } from '@backend/agents/cosmeticSafeCheckAgent';
 import { runIngredientsScrapeAgent } from '@backend/agents/ingredientsScrapeAgent';
+import { runNewsScrapeAgent } from '@backend/agents/newsScrapeAgent';
+import { runNewsSummaryAgent } from '@backend/agents/newsSummaryAgent';
 import { runStockDataAgent } from '@backend/agents/stockDataAgent';
 import { runWebpageSummarizeAgent } from '@backend/agents/webpageSummarizeAgent';
 
-export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data';
+export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data' | 'news-scrape' | 'news-summary';
 
 export interface ToolExecutionContext {
   input: string;
@@ -29,6 +33,8 @@ export interface ToolExecutionContext {
   extractedUrl?: string;
   /** LLM-extracted stock ticker symbol (stock-data queries) */
   extractedTicker?: string;
+  /** LLM-extracted news URLs (news-summary queries) */
+  extractedNewsUrls?: Array<{url: string, title: string}>;
 }
 
 export interface ToolExecutionResult {
@@ -417,6 +423,28 @@ export const TOOL_REGISTRY: Record<ToolRoute, ToolDefinition> = {
     execute: runStockDataAgent,
     buildPreferenceUpdates: () => ({
       lastUsedAgent: STOCK_DATA_AGENT.name,
+    }),
+  },
+  'news-scrape': {
+    route: 'news-scrape',
+    taskId: 'news-scrape-tool',
+    taskDescription: 'Search and scrape recent news articles for a stock using News Scrape Agent',
+    keywords: /(news|新闻|article|articles|headlines|报道|\$[A-Za-z]{1,6}\s*news|ticker.*news)/i,
+    agentName: NEWS_SCRAPE_AGENT.name,
+    execute: runNewsScrapeAgent,
+    buildPreferenceUpdates: () => ({
+      lastUsedAgent: NEWS_SCRAPE_AGENT.name,
+    }),
+  },
+  'news-summary': {
+    route: 'news-summary',
+    taskId: 'news-summary-tool',
+    taskDescription: 'Summarize news articles and analyze overall sentiment using News Summary Agent',
+    keywords: /(summarize.*news|news.*summary|sentiment|analysis|analyze.*news|新闻.*总结|总结.*新闻)/i,
+    agentName: NEWS_SUMMARY_AGENT.name,
+    execute: runNewsSummaryAgent,
+    buildPreferenceUpdates: () => ({
+      lastUsedAgent: NEWS_SUMMARY_AGENT.name,
     }),
   },
 };

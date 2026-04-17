@@ -76,5 +76,19 @@ export const agents: Agent[] = [
     description: 'Fetches and analyzes financial statements (income statement, balance sheet, cash flow) for any publicly traded stock. Provides comprehensive financial analysis including profitability ratios, leverage metrics, cash flow quality, and investment considerations.',
     capabilities: ['Income statement analysis', 'Balance sheet analysis', 'Cash flow analysis', 'Financial ratio calculation', 'Risk assessment', 'Investment recommendations'],
     icon: '📊'
+  },
+  {
+    id: 'news-scrape',
+    name: 'News Scrape Agent',
+    description: 'Searches and scrapes recent news articles about stocks from reliable financial sources. Returns top 5 news articles in a structured table format with titles, dates, and direct links.',
+    capabilities: ['News search', 'Article scraping', 'Financial news aggregation', 'Real-time news updates', 'Source credibility filtering'],
+    icon: '📰'
+  },
+  {
+    id: 'news-summary',
+    name: 'News Summary Agent',
+    description: 'Analyzes multiple news articles about a stock to provide overall sentiment analysis. Summarizes individual articles, determines bullish/bearish sentiment, and provides comprehensive market assessment with key insights.',
+    capabilities: ['News summarization', 'Sentiment analysis', 'Market sentiment aggregation', 'Trend identification', 'Investment signal analysis'],
+    icon: '📝'
   }
 ];
