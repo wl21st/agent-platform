@@ -31,7 +31,9 @@ import {
 import {
   classifyUserIntent,
   generateAssistantResponse,
+  generateParallelResponse,
   type IntentClassification,
+  type SingleIntent,
 } from '@backend/llm/openai';
 import {
   appendMessage,
@@ -99,6 +101,32 @@ type OrchestratorStateType = typeof OrchestratorState.State;
 
 function pause(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/**
+ * Async generator that yields each promise's settled result in the order
+ * they complete (NOT in the order they were started). Used by the parallel
+ * workflow to stream live task-status updates as each tool finishes.
+ */
+async function* yieldAsCompleted<T>(
+  promises: Array<Promise<T>>,
+): AsyncGenerator<{ index: number; result: PromiseSettledResult<T> }> {
+  type Marker = { i: number; r: PromiseSettledResult<T> };
+  const markers: Array<Promise<Marker>> = promises.map((p, i) =>
+    p.then(
+      (value): Marker => ({ i, r: { status: 'fulfilled', value } }),
+      (reason): Marker => ({ i, r: { status: 'rejected', reason } }),
+    ),
+  );
+
+  const settled = new Set<number>();
+  while (settled.size < markers.length) {
+    const pending = markers.filter((_, i) => !settled.has(i));
+    const { i, r } = await Promise.race(pending);
+    if (settled.has(i)) continue;
+    settled.add(i);
+    yield { index: i, result: r };
+  }
 }
 
 function markTask(tasks: TaskStatus[], taskId: string, status: TaskStatus['status']) {
@@ -684,8 +712,176 @@ async function* streamIngredientsScrapeWorkflow(params: {
 }
 
 /**
+ * Parallel multi-intent workflow.
+ *
+ * When the LLM detects that the user asked for MULTIPLE INDEPENDENT things
+ * in one query (e.g. "summarize https://example.com and tell me the weather
+ * in Tokyo"), this workflow:
+ *
+ *   1. Builds one task row per intent (all in "running" state up front)
+ *   2. Fires ALL tool executions concurrently via Promise.all
+ *   3. As each tool finishes (yieldAsCompleted), emits:
+ *        - a task-status update (running → completed / failed)
+ *        - an "agent-done" chat bubble with that tool's markdown
+ *   4. Merges all results through generateParallelResponse and streams a
+ *      single combined LLM summary as the final message.
+ *
+ * This is TRUE parallel processing — network-bound tools (weather API,
+ * webpage fetch, stock API, etc.) execute simultaneously rather than
+ * sequentially, so total latency ≈ max(tool latencies) instead of sum.
+ */
+async function* streamParallelWorkflow(params: {
+  sessionId: string;
+  input: string;
+  intents: SingleIntent[];
+  preferences: UserPreferences;
+  history: ConversationTurn[];
+}): AsyncGenerator<StreamEvent> {
+  const { sessionId, input, intents, preferences, history } = params;
+
+  /* ── Step 1: Build initial task list (intent + N parallel tools + compose) ── */
+  const toolTaskIds: string[] = intents.map(
+    (sub, idx) => `${getToolDefinition(sub.tool as ToolRoute).taskId}-parallel-${idx}`,
+  );
+
+  let tasks: TaskStatus[] = [
+    {
+      id: 'parse-intent',
+      description: `LLM intent classification (${intents.length} parallel intents detected)`,
+      status: 'completed',
+      agent: ORCHESTRATOR_AGENT.name,
+    },
+    ...intents.map((sub, idx) => {
+      const tool = getToolDefinition(sub.tool as ToolRoute);
+      return {
+        id: toolTaskIds[idx],
+        description: `[Parallel ${idx + 1}/${intents.length}] ${tool.taskDescription}`,
+        status: 'running' as const,
+        agent: tool.agentName,
+      };
+    }),
+    {
+      id: 'compose-response',
+      description: 'LLM response generation (merging parallel results)',
+      status: 'pending',
+      agent: ORCHESTRATOR_AGENT.name,
+    },
+  ];
+
+  yield { type: 'tasks', tasks };
+
+  /* ── Step 2: Fire all tool executions CONCURRENTLY via Promise.all ── */
+  const executionPromises = intents.map((sub) => {
+    const tool = getToolDefinition(sub.tool as ToolRoute);
+    return tool.execute({
+      input,
+      preferences,
+      extractedLocation: sub.location || undefined,
+      extractedTimeframe: sub.timeframe || undefined,
+      extractedSearchQuery: sub.searchQuery || undefined,
+      extractedUrl: sub.url || undefined,
+      extractedTicker: sub.ticker || undefined,
+      extractedNewsUrls: sub.newsUrls || undefined,
+    });
+  });
+
+  const results: Array<ToolExecutionResult | null> = new Array(intents.length).fill(null);
+  const errors: Array<{ tool: SingleIntent['tool']; error: string }> = [];
+
+  /* ── Step 3: Stream task-status updates as each tool finishes ──────────
+   *
+   * We intentionally do NOT emit an `agent-done` chat bubble per tool here.
+   * Unlike the single-agent pipelines, many tools (e.g. webpage-summarize)
+   * return RAW intermediate data (scraped HTML text) in their `markdown`
+   * field — the actual user-facing summary is produced later by the
+   * response-generator LLM. Showing the raw data would confuse the user.
+   *
+   * The final combined response from `generateParallelResponse` IS the
+   * user-facing result for all tools in the parallel batch.
+   * ─────────────────────────────────────────────────────────────────── */
+  for await (const { index, result } of yieldAsCompleted(executionPromises)) {
+    const taskId = toolTaskIds[index];
+    const sub = intents[index];
+
+    if (result.status === 'fulfilled') {
+      results[index] = result.value;
+      tasks = markTask(tasks, taskId, 'completed');
+      yield { type: 'tasks', tasks };
+    } else {
+      const message =
+        result.reason instanceof Error
+          ? result.reason.message
+          : String(result.reason ?? 'Unknown error');
+      console.error(`[streamParallelWorkflow] tool "${sub.tool}" failed:`, result.reason);
+      errors.push({ tool: sub.tool, error: message });
+      tasks = markTask(tasks, taskId, 'failed');
+      yield { type: 'tasks', tasks };
+    }
+  }
+
+  /* ── Step 4: LLM merges all tool results into one cohesive response ── */
+  tasks = markTask(tasks, 'compose-response', 'running');
+  yield { type: 'tasks', tasks };
+
+  const successfulResults = results.filter(
+    (r): r is ToolExecutionResult => r !== null,
+  );
+
+  const combinedResponse = await generateParallelResponse({
+    input,
+    toolResults: successfulResults,
+    errors,
+    preferences,
+    history,
+  });
+
+  tasks = markTask(tasks, 'compose-response', 'completed');
+  yield { type: 'tasks', tasks };
+
+  /* ── Step 5: Update preferences from each successful tool result ── */
+  let currentPrefs = preferences;
+  for (let i = 0; i < intents.length; i += 1) {
+    const result = results[i];
+    if (!result) continue;
+    const route = intents[i].tool;
+    if (route === 'none') continue;
+    const updates = derivePreferenceUpdates(
+      input,
+      route as SelectedToolRoute,
+      result,
+      currentPrefs,
+    );
+    const session = updatePreferences(sessionId, updates);
+    currentPrefs = session.preferences;
+  }
+
+  /* ── Step 6: Stream the merged summary as the final assistant message ── */
+  const assistantMessage = createMessage({
+    role: 'assistant',
+    content: combinedResponse,
+    agent: ORCHESTRATOR_AGENT,
+  });
+
+  for (const delta of chunkText(combinedResponse)) {
+    yield { type: 'message', delta, agent: ORCHESTRATOR_AGENT };
+    await pause(35);
+  }
+
+  appendMessage(sessionId, assistantMessage);
+
+  yield {
+    type: 'done',
+    message: assistantMessage,
+    tasks,
+    preferences: currentPrefs,
+  };
+}
+
+/**
  * Main streaming entry point. Routes to the appropriate workflow:
+ * - Multiple independent intents → parallel workflow (Promise.all)
  * - `ingredients-scrape` → two-step workflow with intermediate task streaming
+ * - `news-summary` → two-step news scrape + summary workflow
  * - Everything else → standard LangGraph pipeline
  */
 export async function* streamOrchestratorSession(params: {
@@ -734,6 +930,20 @@ export async function* streamOrchestratorSession(params: {
   };
 
   /* ── Route to the appropriate workflow ───────────────────────────────── */
+
+  // If the LLM detected 2+ independent intents, run them in parallel.
+  // This takes priority over single-tool workflows.
+  if (intent.intents && intent.intents.length >= 2) {
+    yield* streamParallelWorkflow({
+      sessionId,
+      input: params.input,
+      intents: intent.intents,
+      preferences: session.preferences,
+      history,
+    });
+    return;
+  }
+
   if (intent.tool === 'ingredients-scrape') {
     yield* streamIngredientsScrapeWorkflow({
       sessionId,

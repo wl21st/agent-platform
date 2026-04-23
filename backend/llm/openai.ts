@@ -25,9 +25,36 @@ function getOpenAIClient() {
  * Intent Classification — LLM-first architecture
  * ────────────────────────────────────────────────────────────────────────── */
 
-export interface IntentClassification {
+export type IntentTool =
+  | 'weather'
+  | 'search'
+  | 'webpage-summarize'
+  | 'cosmetic-safe-check'
+  | 'ingredients-scrape'
+  | 'stock-data'
+  | 'news-scrape'
+  | 'news-summary'
+  | 'none';
+
+const VALID_INTENT_TOOLS: IntentTool[] = [
+  'weather',
+  'search',
+  'webpage-summarize',
+  'cosmetic-safe-check',
+  'ingredients-scrape',
+  'stock-data',
+  'news-scrape',
+  'news-summary',
+  'none',
+];
+
+/**
+ * A single, atomic intent. Used both as the top-level primary intent
+ * AND as each entry in the `intents` array for parallel multi-intent queries.
+ */
+export interface SingleIntent {
   /** Which tool should be invoked (or 'none' for direct LLM response) */
-  tool: 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data' | 'news-scrape' | 'news-summary' | 'none';
+  tool: IntentTool;
   /** Extracted city / location (weather queries only) */
   location?: string;
   /** current day or tomorrow (weather queries only) */
@@ -40,6 +67,20 @@ export interface IntentClassification {
   ticker?: string;
   /** Extracted news URLs (news-summary queries) */
   newsUrls?: Array<{url: string, title: string}>;
+}
+
+export interface IntentClassification extends SingleIntent {
+  /**
+   * When the user asks for multiple INDEPENDENT things in one query
+   * (e.g. "summarize https://... AND what's the weather in Tokyo"),
+   * the LLM returns each intent here for parallel execution.
+   *
+   * When present and containing 2+ entries, the orchestrator runs all
+   * tools concurrently via Promise.all() and merges the results.
+   *
+   * When absent / length < 2, the top-level `tool` is used (single-intent).
+   */
+  intents?: SingleIntent[];
   /** Whether this message is a follow-up to the previous conversation */
   isFollowUp: boolean;
 }
@@ -93,8 +134,33 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     '  Extract the ticker symbol into the "ticker" field. Do NOT include the $ sign.',
     '- For greetings, general chat, or follow-up questions, set tool to "none".',
     '',
-    'You MUST respond ONLY with a valid JSON object, nothing else. Example:',
+    'PARALLEL INTENT DETECTION (IMPORTANT):',
+    '- If the user asks for MULTIPLE INDEPENDENT things in one query, return an "intents" array',
+    '  with each intent as a separate object (each with its own tool + extracted fields).',
+    '  Examples of parallel multi-intent queries:',
+    '    • "Summarize https://example.com and tell me the weather in Tokyo"',
+    '       → two intents: webpage-summarize + weather',
+    '    • "What\'s the weather in Paris and give me AAPL financials?"',
+    '       → two intents: weather + stock-data',
+    '    • "Get news for TSLA and summarize https://foo.com"',
+    '       → two intents: news-scrape + webpage-summarize',
+    '- Only use "intents" when the requests are TRULY INDEPENDENT. Do NOT split a single',
+    '  multi-step task (e.g. "scrape ingredients from X and check safety" is ONE intent:',
+    '  ingredients-scrape, because that tool does both steps internally).',
+    '- When the user asks for only one thing, DO NOT include "intents" (or set it to an empty array).',
+    '- When returning "intents", also fill the top-level tool/fields with the FIRST intent',
+    '  (for backward compatibility).',
+    '- Each element of "intents" must have its own tool and its own extracted fields',
+    '  (location, url, ticker, etc.) — do NOT leak fields from one intent into another.',
+    '',
+    'You MUST respond ONLY with a valid JSON object, nothing else.',
+    'Single-intent example:',
     '{"tool":"stock-data","ticker":"AAPL","url":"","location":"","timeframe":"","searchQuery":"","isFollowUp":false}',
+    'Parallel multi-intent example:',
+    '{"tool":"webpage-summarize","url":"https://example.com","intents":[' +
+      '{"tool":"webpage-summarize","url":"https://example.com"},' +
+      '{"tool":"weather","location":"Tokyo","timeframe":"current"}' +
+      '],"isFollowUp":false}',
   ];
 
   if (preferences.preferredWeatherLocation) {
@@ -205,9 +271,23 @@ export async function classifyUserIntent(params: {
     const jsonText = text.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(jsonText) as IntentClassification;
 
-    // Validate
-    if (!['weather', 'search', 'webpage-summarize', 'cosmetic-safe-check', 'ingredients-scrape', 'stock-data', 'news-scrape', 'news-summary', 'none'].includes(parsed.tool)) {
+    // Validate top-level tool
+    if (!VALID_INTENT_TOOLS.includes(parsed.tool)) {
       return null;
+    }
+
+    // Validate & sanitize each parallel intent, if present
+    if (Array.isArray(parsed.intents)) {
+      const clean = parsed.intents.filter(
+        (i): i is SingleIntent => !!i && typeof i === 'object' && VALID_INTENT_TOOLS.includes(i.tool),
+      );
+
+      // Drop 'none' entries — they add no work to a parallel batch
+      const actionable = clean.filter((i) => i.tool !== 'none');
+
+      // Only keep the intents array when there are 2+ actionable parallel intents.
+      // Otherwise, fall back to the single-intent (top-level) shape.
+      parsed.intents = actionable.length >= 2 ? actionable : undefined;
     }
 
     return parsed;
@@ -486,5 +566,114 @@ export async function generateAssistantResponse(params: {
   } catch (error) {
     console.error('[generateAssistantResponse] LLM response generation failed:', error);
     return buildFallbackResponse(params);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Parallel Response Generator — merges multiple tool results into a single
+ * cohesive answer for multi-intent queries executed concurrently.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+function buildParallelFallbackResponse(
+  toolResults: ToolExecutionResult[],
+  errors: Array<{ tool: IntentTool; error: string }>,
+): string {
+  const sections = toolResults.map(
+    (r) => `## ${r.agent.icon} ${r.agent.name}\n\n${r.markdown}`,
+  );
+
+  if (errors.length > 0) {
+    sections.push(
+      [
+        '## ⚠️ Failed Tasks',
+        '',
+        ...errors.map((e) => `- **${e.tool}**: ${e.error}`),
+      ].join('\n'),
+    );
+  }
+
+  return sections.join('\n\n---\n\n');
+}
+
+/**
+ * Generate a single combined response that merges results from multiple
+ * tools executed in parallel. Uses clear section headings for each topic
+ * so the user can scan each result independently.
+ */
+export async function generateParallelResponse(params: {
+  input: string;
+  toolResults: ToolExecutionResult[];
+  errors?: Array<{ tool: IntentTool; error: string }>;
+  preferences: UserPreferences;
+  history: ConversationTurn[];
+}): Promise<string> {
+  const errors = params.errors ?? [];
+
+  if (params.toolResults.length === 0) {
+    // Nothing succeeded — surface the errors directly
+    return buildParallelFallbackResponse([], errors);
+  }
+
+  const client = getOpenAIClient();
+  if (!client) {
+    return buildParallelFallbackResponse(params.toolResults, errors);
+  }
+
+  try {
+    const toolsBlock = params.toolResults
+      .map((r, idx) =>
+        [
+          `--- Tool #${idx + 1}: ${r.agent.name} (${r.agent.id}) ---`,
+          r.markdown,
+        ].join('\n'),
+      )
+      .join('\n\n');
+
+    const errorsBlock =
+      errors.length > 0
+        ? [
+            '',
+            '--- Failed Tools ---',
+            ...errors.map((e) => `- ${e.tool}: ${e.error}`),
+          ].join('\n')
+        : '';
+
+    const suffix = [
+      '---',
+      'The user asked for MULTIPLE INDEPENDENT things in one query, and several tools',
+      'were executed IN PARALLEL. Below are all the tool results.',
+      '',
+      toolsBlock,
+      errorsBlock,
+      '---',
+      '',
+      'Combine these results into a SINGLE cohesive response for the user. Requirements:',
+      '- Use a clear section heading (## with an emoji) for each topic — one per tool result.',
+      '- Preserve important data (temperatures, financial figures, summaries, ingredient lists) as-is.',
+      '- Keep the markdown formatting rules from the system prompt (webpage summary structure,',
+      '  stock analysis disclaimer, etc.) for each relevant section.',
+      '- Briefly note any failed tools at the end so the user knows what did not run.',
+      '- Write in the same language the user used.',
+      '- Do NOT re-ask clarifying questions — just present the results.',
+    ].join('\n');
+
+    const input = buildMultiTurnInput({
+      systemPrompt: buildResponseSystemPrompt(params.preferences),
+      history: params.history,
+      currentInput: params.input,
+      currentUserSuffix: suffix,
+    });
+
+    const response = await client.responses.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+      input,
+    });
+
+    return (
+      response.output_text || buildParallelFallbackResponse(params.toolResults, errors)
+    );
+  } catch (error) {
+    console.error('[generateParallelResponse] LLM response generation failed:', error);
+    return buildParallelFallbackResponse(params.toolResults, errors);
   }
 }
