@@ -115,8 +115,8 @@ This platform features **true parallel execution** of multiple independent agent
 │                     ▼                                           │
 │   ┌─────────────────────────────────────────────────────────┐   │
 │   │        LLM Response Synthesis                           │   │
-│   │  Combines all agent results into single cohesive reply  │   │
-│   │  with clear section headings and markdown formatting     │   │
+│   │  Combines all agent results into single numbered reply   │   │
+│   │  (1., 2., 3.) with clear section titles and formatting    │   │
 │   └─────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -145,7 +145,7 @@ This platform features **true parallel execution** of multiple independent agent
 - **Promise.all()**: Concurrent agent execution via JavaScript promises
 - **Completion-Order Streaming**: Results stream as they finish, not start order
 - **LLM Intent Detection**: Advanced prompt engineering detects independent vs. dependent tasks
-- **Response Merging**: Specialized LLM prompt combines parallel results into user-friendly format
+- **Response Merging**: Specialized LLM prompt combines parallel results into numbered sections (1., 2., 3.) with clear titles
 
 ### Key Components
 

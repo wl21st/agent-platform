@@ -579,7 +579,7 @@ function buildParallelFallbackResponse(
   errors: Array<{ tool: IntentTool; error: string }>,
 ): string {
   const sections = toolResults.map(
-    (r) => `## ${r.agent.icon} ${r.agent.name}\n\n${r.markdown}`,
+    (r, idx) => `## ${idx + 1}. **${r.agent.icon} ${r.agent.name}**\n\n${r.markdown}`,
   );
 
   if (errors.length > 0) {
@@ -647,8 +647,20 @@ export async function generateParallelResponse(params: {
       errorsBlock,
       '---',
       '',
-      'Combine these results into a SINGLE cohesive response for the user. Requirements:',
-      '- Use a clear section heading (## with an emoji) for each topic — one per tool result.',
+      'CRITICAL FORMATTING REQUIREMENT — READ CAREFULLY:',
+      'Combine these results into a SINGLE cohesive response for the user.',
+      '',
+      'SECTION HEADING FORMAT (MANDATORY):',
+      `Use "## N. **Title**" markdown headings for each section, where N is the section number.`,
+      `Example for section 1: "## 1. **Summary of CNN Article**"`,
+      `Example for section 2: "## 2. **Weather in Tokyo, Japan Today**"`,
+      'DO NOT use plain numbered lists (1. text) for the section headings — use ## headings.',
+      'This ensures each section number is always visible and never reset by the markdown renderer.',
+      '',
+      'Other requirements:',
+      '- Include a brief summary of the actual answer in the section title itself.',
+      '- Keep section titles concise but informative — include key facts from the answer.',
+      '- Under each ## heading, use BULLET POINTS (-) for details.',
       '- Preserve important data (temperatures, financial figures, summaries, ingredient lists) as-is.',
       '- Keep the markdown formatting rules from the system prompt (webpage summary structure,',
       '  stock analysis disclaimer, etc.) for each relevant section.',

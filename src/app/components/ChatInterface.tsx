@@ -525,7 +525,7 @@ export default function ChatInterface() {
                             h3: ({ children }) => <h3 className="mb-1 text-sm font-semibold">{children}</h3>,
                             p: ({ children }) => <p className="mb-2 break-words">{children}</p>,
                             ul: ({ children }) => <ul className="mb-2 list-inside list-disc">{children}</ul>,
-                            ol: ({ children }) => <ol className="mb-2 list-inside list-decimal">{children}</ol>,
+                            ol: ({ children, start }) => <ol start={start} className="mb-2 list-inside list-decimal">{children}</ol>,
                             li: ({ children }) => <li className="mb-1 break-words">{children}</li>,
                             pre: ({ children }) => (
                               <pre className="mb-2 overflow-x-auto whitespace-pre-wrap break-words rounded bg-gray-200 p-2 text-xs dark:bg-gray-600">
