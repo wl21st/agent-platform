@@ -18,9 +18,7 @@ import { runNewsSummaryAgent } from '@backend/agents/newsSummaryAgent';
 import { runStockDataAgent } from '@backend/agents/stockDataAgent';
 import { runWebpageSummarizeAgent } from '@backend/agents/webpageSummarizeAgent';
 import { runWeatherAgent } from '@backend/agents/weatherAgent';
-import { runSearchAgent } from '@backend/agents/searchAgent';
-import { extractLocation, isWeatherFollowUp } from '@backend/agents/weatherAgent';
-import { extractSearchTopic } from '@backend/agents/searchAgent';
+import { runSearchAgent, extractSearchTopic } from '@backend/agents/searchAgent';
 
 export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data' | 'news-scrape' | 'news-summary';
 
@@ -212,13 +210,6 @@ export function resolveToolRouteWithContext(context: {
     return directMatch;
   }
 
-  if (
-    context.preferences.lastUsedAgent === WEATHER_AGENT.name &&
-    context.preferences.preferredWeatherLocation &&
-    isWeatherFollowUp(context.input)
-  ) {
-    return 'weather';
-  }
 
   return 'none';
 }
