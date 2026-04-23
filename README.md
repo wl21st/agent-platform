@@ -1,14 +1,17 @@
 # Multi-Agent Platform
 
-A modern multi-agent system built with Next.js, featuring intelligent agents that can perform various tasks through natural language interaction. Users can select specialized agents, engage in conversations, and leverage external APIs for real-time data retrieval.
+A modern multi-agent system built with Next.js, featuring **true parallel execution** of intelligent agents. Users can request multiple independent tasks simultaneously (e.g., "summarize this webpage and get the weather"), with agents executing concurrently for optimal performance. Built with advanced LLM orchestration for intelligent intent detection and response synthesis.
 
 ## Features
 
+- **True Parallel Agent Execution**: Multiple independent agents execute concurrently for optimal performance
+- **Intelligent Multi-Intent Detection**: Automatically detects when to run tasks in parallel vs. sequential
 - **Intelligent Agents**: Specialized agents for weather, search, webpage summarization, financial data, news, and more
 - **Natural Language Interface**: Chat with agents using conversational AI powered by OpenAI
 - **Real-time Data**: Integration with external APIs for live weather, financial data, and news
 - **Modular Architecture**: Extensible agent system with easy-to-add new capabilities
 - **Responsive UI**: Modern web interface with agent overview and detailed interactions
+- **Live Task Streaming**: Real-time progress updates as agents complete tasks
 
 ## Project Structure
 
@@ -67,6 +70,83 @@ This project implements a multi-agent system where users interact with specializ
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Parallel Agent Execution
+
+This platform features **true parallel execution** of multiple independent agents, enabling users to request multiple tasks simultaneously for optimal performance. When a user asks for multiple unrelated things (e.g., "summarize this webpage and get the weather in Tokyo"), the system detects independent intents and executes all agents concurrently.
+
+### Parallel Processing Workflow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│               User Query: Multi-Intent Detection                │
+│   "Summarize https://example.com and get weather in Tokyo"      │
+└─────────────────────┬───────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              LLM Intent Classification                          │
+│  Detects 2 independent intents:                                │
+│  • webpage-summarize (url: https://example.com)               │
+│  • weather (location: Tokyo, timeframe: current)              │
+└─────────────────────┬───────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              Parallel Agent Execution                          │
+│                                                                 │
+│    ┌─────────────────┐    ┌─────────────────┐                   │
+│    │ Webpage Agent   │    │  Weather Agent  │                   │
+│    │ (1.5s network)  │    │  (0.4s network) │                   │
+│    │                 │    │                  │                   │
+│    │ ├─ Scrape HTML  │    │ ├─ API call      │                   │
+│    │ ├─ Extract text │    │ ├─ Parse JSON    │                   │
+│    │ └─ Generate     │    │ └─ Format        │                   │
+│    │    summary      │    │    response      │                   │
+│    └─────────────────┘    └─────────────────┘                   │
+│           │                       │                             │
+│           └─────────┬─────────────┘                             │
+│                     ▼                                           │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │        Task Status Updates (Live Streaming)             │   │
+│   │  • Webpage Summarize Agent: Running → Completed (1.5s)  │   │
+│   │  • Weather Agent: Running → Completed (0.4s)            │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                     │                                           │
+│                     ▼                                           │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │        LLM Response Synthesis                           │   │
+│   │  Combines all agent results into single cohesive reply  │   │
+│   │  with clear section headings and markdown formatting     │   │
+│   └─────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key Benefits
+
+- **Reduced Latency**: Total response time equals the slowest agent, not the sum
+- **Independent Failures**: One agent failure doesn't block others
+- **Live Progress**: Task status updates stream in real-time as agents complete
+- **Intelligent Merging**: LLM synthesizes multiple results into a single, coherent response
+- **Automatic Detection**: System automatically detects when tasks can run in parallel vs. sequential
+
+### Examples
+
+**Parallel (Independent Tasks):**
+- "Summarize https://example.com and get the weather in Paris"
+- "Check AAPL stock data and search for latest AI news"
+- "Get news for TSLA and analyze cosmetic ingredients from this URL"
+
+**Sequential (Dependent Tasks):**
+- "Scrape ingredients from this URL and check their safety" → Single ingredients-scrape agent
+- "Get news about AAPL and summarize the sentiment" → Single news-summary agent
+
+### Technical Implementation
+
+- **Promise.all()**: Concurrent agent execution via JavaScript promises
+- **Completion-Order Streaming**: Results stream as they finish, not start order
+- **LLM Intent Detection**: Advanced prompt engineering detects independent vs. dependent tasks
+- **Response Merging**: Specialized LLM prompt combines parallel results into user-friendly format
+
 ### Key Components
 
 #### Frontend
@@ -76,10 +156,13 @@ This project implements a multi-agent system where users interact with specializ
 - **Responsive Design**: Mobile-first approach with adaptive layouts
 
 #### Backend
-- **Agent Orchestrator**: Routes user requests to appropriate specialized agents
-- **Tool Agents**: Individual agents with specific capabilities
+- **Agent Orchestrator**: Routes user requests to appropriate specialized agents with parallel execution support
+- **Tool Agents**: Individual agents with specific capabilities, executing concurrently when independent
+- **Parallel Workflow Engine**: Promise.all()-based concurrent execution with completion-order streaming
+- **LLM Intent Classification**: Advanced multi-intent detection for automatic parallel vs. sequential routing
+- **Response Synthesis**: Intelligent merging of parallel agent results into cohesive replies
 - **Memory System**: Session-based conversation persistence
-- **LLM Integration**: OpenAI API for intelligent response generation
+- **LLM Integration**: OpenAI API for intelligent response generation and result merging
 
 #### Tools & APIs
 - **OpenAI API**: Powers agent responses and intention detection
