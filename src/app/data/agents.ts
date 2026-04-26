@@ -90,5 +90,26 @@ export const agents: Agent[] = [
     description: 'Analyzes multiple news articles about a stock to provide overall sentiment analysis. Summarizes individual articles, determines bullish/bearish sentiment, and provides comprehensive market assessment with key insights.',
     capabilities: ['News summarization', 'Sentiment analysis', 'Market sentiment aggregation', 'Trend identification', 'Investment signal analysis'],
     icon: '📝'
+  },
+  {
+    id: 'technical-analysis',
+    name: 'Technical Analysis Agent',
+    description: 'Performs comprehensive technical analysis on stocks using 14 months of daily OHLCV price data. Calculates moving averages (SMA 20/50/200, EMA 12/26), RSI, MACD, Bollinger Bands, ATR, and OBV. Derives actionable trend, momentum, volatility, and volume signals.',
+    capabilities: ['Moving averages (SMA/EMA)', 'RSI & MACD momentum', 'Bollinger Bands & ATR volatility', 'Volume & OBV analysis', 'Trend/momentum signal generation', '52-week range positioning'],
+    icon: '📈'
+  },
+  {
+    id: 'risk-assessment',
+    name: 'Risk Assessment Agent',
+    description: 'Synthesizes fundamental, news sentiment, and technical data into a composite risk profile. Scores overall, market, financial, operational, and liquidity risk on a 0–100 scale. Identifies specific risk factors with severity ratings, and calculates stop-loss and take-profit price targets.',
+    capabilities: ['Composite risk scoring (0–100)', 'Market / financial / operational risk', 'Risk factor identification & severity', 'Stop-loss price calculation', 'Take-profit target levels', 'Multi-dimension risk aggregation'],
+    icon: '⚠️'
+  },
+  {
+    id: 'stock-decision',
+    name: 'Investment Decision Agent',
+    description: 'Produces the final AI-powered investment recommendation (Buy / Hold / Sell) by combining fundamental analysis, news sentiment, technical indicators, and risk assessment. Provides confidence scores, suggested entry price, stop-loss, take-profit targets, risk/reward ratio, and key bullish and bearish factors with full reasoning.',
+    capabilities: ['Buy / Hold / Sell recommendation', 'Confidence score (0–100)', 'Entry, stop-loss & take-profit levels', 'Risk/reward ratio', 'Bullish & bearish factor summary', 'Time horizon guidance'],
+    icon: '🎯'
   }
 ];

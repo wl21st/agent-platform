@@ -3,6 +3,7 @@ import {
   INGREDIENTS_SCRAPE_AGENT,
   NEWS_SCRAPE_AGENT,
   NEWS_SUMMARY_AGENT,
+  ORCHESTRATOR_AGENT,
   SEARCH_AGENT,
   STOCK_DATA_AGENT,
   WEATHER_AGENT,
@@ -16,11 +17,12 @@ import { runIngredientsScrapeAgent } from '@backend/agents/ingredientsScrapeAgen
 import { runNewsScrapeAgent } from '@backend/agents/newsScrapeAgent';
 import { runNewsSummaryAgent } from '@backend/agents/newsSummaryAgent';
 import { runStockDataAgent } from '@backend/agents/stockDataAgent';
+import { runTechnicalAnalysisAgent } from '@backend/agents/technicalAnalysisAgent';
 import { runWebpageSummarizeAgent } from '@backend/agents/webpageSummarizeAgent';
 import { runWeatherAgent } from '@backend/agents/weatherAgent';
 import { runSearchAgent, extractSearchTopic } from '@backend/agents/searchAgent';
 
-export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data' | 'news-scrape' | 'news-summary';
+export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data' | 'news-scrape' | 'news-summary' | 'stock-analysis';
 
 export interface ToolExecutionContext {
   input: string;
@@ -149,6 +151,20 @@ export const TOOL_REGISTRY: Record<ToolRoute, ToolDefinition> = {
     execute: runNewsSummaryAgent,
     buildPreferenceUpdates: () => ({
       lastUsedAgent: NEWS_SUMMARY_AGENT.name,
+    }),
+  },
+  'stock-analysis': {
+    route: 'stock-analysis',
+    taskId: 'stock-analysis-tool',
+    taskDescription: 'Full investment analysis: fundamentals + news + technical → risk → buy/hold/sell decision',
+    keywords: /(should\s+i\s+buy|can\s+i\s+buy|is\s+it\s+good\s+to\s+buy|buy.*now|investment\s+analysis|comprehensive.*analysis|buy.*stock|stock.*invest|该.*买|可以.*买|值得.*买)/i,
+    agentName: ORCHESTRATOR_AGENT.name,
+    // In parallel/single-intent non-streaming contexts: just run technical analysis as a proxy
+    // The full pipeline (fundamentals + news + technical + risk + decision) is handled by
+    // streamStockAnalysisWorkflow in the orchestrator.
+    execute: runTechnicalAnalysisAgent,
+    buildPreferenceUpdates: () => ({
+      lastUsedAgent: ORCHESTRATOR_AGENT.name,
     }),
   },
 };

@@ -1,4 +1,16 @@
-export type AgentId = 'orchestrator' | 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data' | 'news-scrape' | 'news-summary';
+export type AgentId =
+  | 'orchestrator'
+  | 'weather'
+  | 'search'
+  | 'webpage-summarize'
+  | 'cosmetic-safe-check'
+  | 'ingredients-scrape'
+  | 'stock-data'
+  | 'news-scrape'
+  | 'news-summary'
+  | 'technical-analysis'
+  | 'risk-assessment'
+  | 'stock-decision';
 
 export interface AgentSummary {
   id: AgentId;
@@ -136,8 +148,26 @@ export const NEWS_SUMMARY_AGENT: AgentSummary = {
   icon: '📝',
 };
 
+export const TECHNICAL_ANALYSIS_AGENT: AgentSummary = {
+  id: 'technical-analysis',
+  name: 'Technical Analysis Agent',
+  icon: '📈',
+};
+
+export const RISK_ASSESSMENT_AGENT: AgentSummary = {
+  id: 'risk-assessment',
+  name: 'Risk Assessment Agent',
+  icon: '⚠️',
+};
+
+export const STOCK_DECISION_AGENT: AgentSummary = {
+  id: 'stock-decision',
+  name: 'Investment Decision Agent',
+  icon: '🎯',
+};
+
 export const INITIAL_ASSISTANT_GREETING =
-  'Hello! I\'m the Orchestrator Agent. Ask for weather, search, webpage summary, cosmetic ingredient safety check, ingredient scraping from a product URL, stock financial analysis, news scraping, news summary, or general help and I\'ll route the request to the best tool.';
+  'Hello! I\'m the Orchestrator Agent. Ask for weather, search, webpage summary, cosmetic ingredient safety check, ingredient scraping from a product URL, stock financial analysis, news scraping, news summary, **full investment analysis** (e.g. "Should I buy AMD?"), or general help and I\'ll route the request to the best tool.';
 
 export function createId(prefix = 'id') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

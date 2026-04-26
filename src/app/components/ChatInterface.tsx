@@ -404,26 +404,34 @@ export default function ChatInterface() {
 
   return (
     <div className="flex flex-1 flex-col bg-white dark:bg-gray-900">
-      <div className="fixed top-0 left-16 right-0 z-10 flex items-center justify-between border-b border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
-        <div className="flex items-center gap-3">
+      {/* Header — full width on mobile, offset by sidebar on sm+ */}
+      <div className="fixed top-0 left-0 sm:left-16 right-0 z-10 flex items-center justify-between border-b border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
+        <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={handleStartNewConversation}
-            className="px-3 py-1 text-xs font-medium bg-blue-500 text-white rounded hover:bg-blue-600"
+            className="shrink-0 px-3 py-1 text-xs font-medium bg-blue-500 text-white rounded hover:bg-blue-600"
             type="button"
           >
             New Chat
           </button>
-          <div>
+          <div className="min-w-0">
             <h3 className="font-semibold text-gray-800 dark:text-gray-200">Chat</h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
+            {/* Session ID — hidden on small screens to save space */}
+            <p className="hidden sm:block text-xs text-gray-500 dark:text-gray-400">
               Session: <span className="font-mono">{sessionId || 'initializing'}</span>
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Active task count badge — visible on mobile when tasks panel is hidden */}
+          {activeTaskCount > 0 && (
+            <span className="lg:hidden rounded-full px-2 py-1 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-200">
+              {activeTaskCount} task{activeTaskCount !== 1 ? 's' : ''}
+            </span>
+          )}
           <span
-            className={`rounded-full px-3 py-1 text-xs font-medium ${
+            className={`hidden sm:inline rounded-full px-3 py-1 text-xs font-medium ${
               isStreaming
                 ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-200'
                 : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200'
@@ -431,6 +439,10 @@ export default function ChatInterface() {
           >
             {isStreaming ? 'Streaming response' : 'Idle'}
           </span>
+          {/* Mobile streaming indicator dot */}
+          {isStreaming && (
+            <span className="sm:hidden w-2 h-2 rounded-full bg-blue-500 animate-pulse" title="Streaming response" />
+          )}
           <DropdownMenu
             onStartNewConversation={handleStartNewConversation}
             onClearHistory={handleClearHistory}
@@ -440,8 +452,8 @@ export default function ChatInterface() {
       </div>
 
       <div className="flex flex-1 min-h-0 pt-16">
-        {/* Active Tasks Column */}
-        <div className={`${isCollapsed ? 'w-12' : 'w-72'} border-r border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800 transition-all duration-300 flex flex-col min-h-0`}>
+        {/* Active Tasks Column — hidden on mobile/tablet, shown on lg+ */}
+        <div className={`hidden lg:flex lg:flex-col ${isCollapsed ? 'lg:w-12' : 'lg:w-72'} border-r border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800 transition-all duration-300 min-h-0`}>
           <div className="flex items-center justify-between p-5 pb-1 border-b border-gray-200 dark:border-gray-700">
             {!isCollapsed && <h3 className="font-semibold text-gray-800 dark:text-gray-200">Active Tasks</h3>}
             <button
@@ -494,7 +506,7 @@ export default function ChatInterface() {
                 <div
                   className={`rounded-lg px-4 py-3 ${
                     message.role === 'user'
-                      ? 'max-w-xs lg:max-w-2xl bg-blue-500 text-white'
+                      ? 'max-w-[80%] sm:max-w-xs lg:max-w-2xl bg-blue-500 text-white'
                       : 'max-w-[90%] bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-gray-100'
                   } overflow-hidden`}
                 >

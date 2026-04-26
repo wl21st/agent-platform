@@ -5,6 +5,7 @@ import {
   type ConversationTurn,
   type UserPreferences,
 } from '@/lib/agent-chat';
+import type { DecisionData, FinancialData, NewsData, NormalizedScores, RiskAssessmentData, TechnicalData } from '@/lib/stockAnalysisInterfaces';
 import type { ToolExecutionResult } from '@backend/agents/toolAgents';
 
 let openAIClient: OpenAI | null | undefined;
@@ -34,6 +35,7 @@ export type IntentTool =
   | 'stock-data'
   | 'news-scrape'
   | 'news-summary'
+  | 'stock-analysis'
   | 'none';
 
 const VALID_INTENT_TOOLS: IntentTool[] = [
@@ -45,6 +47,7 @@ const VALID_INTENT_TOOLS: IntentTool[] = [
   'stock-data',
   'news-scrape',
   'news-summary',
+  'stock-analysis',
   'none',
 ];
 
@@ -111,6 +114,12 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     '  news-summary        — For summarizing multiple news articles and analyzing overall sentiment. Trigger when',
     '                        the user asks to summarize news, analyze sentiment, or wants an overall news assessment.',
     '                        Extract news URLs into the "newsUrls" field if provided.',
+    '  stock-analysis      — For a FULL investment analysis of a stock that combines fundamentals, news sentiment,',
+    '                        technical analysis, risk assessment, and a final buy/hold/sell recommendation.',
+    '                        Trigger when the user asks whether to buy/sell a stock, wants an investment decision,',
+    '                        asks "should I buy X?", "can I buy X now?", "is X a good investment?",',
+    '                        or requests a comprehensive stock analysis with a recommendation.',
+    '                        Extract the ticker symbol into the "ticker" field.',
     '  none               — For follow-up questions, conversational messages, temperature conversions,',
     '                        greetings, or anything that can be answered from context.',
     '',
@@ -132,6 +141,9 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     '- If the user asks about stock financials, financial statements, earnings, revenue, profit margins,',
     '  or mentions a ticker symbol (like $AAPL, MSFT, GOOGL, 600519, 0700.HK), set tool to "stock-data".',
     '  Extract the ticker symbol into the "ticker" field. Do NOT include the $ sign.',
+    '- If the user asks whether to BUY or SELL a stock, wants an investment recommendation, asks',
+    '  "should I buy X?", "can I buy X now?", "is now a good time to buy X?", "is X a good buy?",',
+    '  set tool to "stock-analysis". Extract the ticker into the "ticker" field.',
     '- For greetings, general chat, or follow-up questions, set tool to "none".',
     '',
     'PARALLEL INTENT DETECTION (IMPORTANT):',
@@ -687,5 +699,229 @@ export async function generateParallelResponse(params: {
   } catch (error) {
     console.error('[generateParallelResponse] LLM response generation failed:', error);
     return buildParallelFallbackResponse(params.toolResults, errors);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Risk Assessment — LLM evaluates risk across all three dimensions
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Calls the LLM to produce a structured risk assessment for a stock.
+ * Inputs the normalized scores + key financial/technical/news metrics.
+ * Returns a full RiskAssessmentData JSON including stop-loss and take-profit targets.
+ */
+export async function generateRiskAssessment(params: {
+  ticker: string;
+  currentPrice: number;
+  normalizedScores: NormalizedScores;
+  financialData: FinancialData;
+  technicalData: TechnicalData;
+  newsData: NewsData;
+}): Promise<RiskAssessmentData> {
+  const { ticker, currentPrice, normalizedScores, financialData, technicalData, newsData } = params;
+  const client = getOpenAIClient();
+
+  // Fallback if no LLM
+  const fallback: RiskAssessmentData = {
+    ticker,
+    timestamp: new Date().toISOString(),
+    riskScores: {
+      overallRisk: 100 - normalizedScores.overallScore,
+      marketRisk: 100 - normalizedScores.technicalScore,
+      financialRisk: 100 - normalizedScores.financialScore,
+      operationalRisk: 50,
+      liquidityRisk: 100 - (normalizedScores.financialScore * 0.7 + normalizedScores.technicalScore * 0.3),
+    },
+    riskFactors: [{ factor: 'LLM Unavailable', description: 'Risk assessment generated from scores only.', severity: 'low', impact: 'low' }],
+    riskSummary: `Overall score: ${normalizedScores.overallScore.toFixed(0)}/100. Financial: ${normalizedScores.financialScore.toFixed(0)}, News: ${normalizedScores.newsScore.toFixed(0)}, Technical: ${normalizedScores.technicalScore.toFixed(0)}.`,
+    stopLossPrice: technicalData.indicators.atr14 != null
+      ? parseFloat((currentPrice - 2 * technicalData.indicators.atr14).toFixed(2))
+      : parseFloat((currentPrice * 0.93).toFixed(2)),
+    takeProfitTargets: [
+      { label: 'Target 1 (conservative)', price: parseFloat((currentPrice * 1.10).toFixed(2)) },
+      { label: 'Target 2 (moderate)', price: parseFloat((currentPrice * 1.20).toFixed(2)) },
+      { label: 'Target 3 (aggressive)', price: parseFloat((currentPrice * 1.35).toFixed(2)) },
+    ],
+  };
+
+  if (!client) return fallback;
+
+  try {
+    const atr = technicalData.indicators.atr14 ?? currentPrice * 0.02;
+    const systemPrompt = [
+      'You are a professional equity risk analyst. Respond ONLY with a valid JSON object — no markdown, no explanation.',
+      '',
+      'Analyze the stock and return a RiskAssessmentData JSON with these exact fields:',
+      '{',
+      '  "ticker": string,',
+      '  "timestamp": ISO string,',
+      '  "riskScores": {',
+      '    "overallRisk": number (0-100, higher = more risky),',
+      '    "marketRisk": number (0-100),',
+      '    "financialRisk": number (0-100),',
+      '    "operationalRisk": number (0-100),',
+      '    "liquidityRisk": number (0-100)',
+      '  },',
+      '  "riskFactors": [{ "factor": string, "description": string, "severity": "low"|"medium"|"high", "impact": "low"|"medium"|"high" }],',
+      '  "riskSummary": string (2-3 sentences),',
+      '  "stopLossPrice": number (price level; use 2×ATR below current price as a starting point),',
+      '  "takeProfitTargets": [',
+      '    { "label": "Target 1 (conservative, ~8-12%)", "price": number },',
+      '    { "label": "Target 2 (moderate, ~18-25%)", "price": number },',
+      '    { "label": "Target 3 (aggressive, ~35-50%)", "price": number }',
+      '  ]',
+      '}',
+    ].join('\n');
+
+    const userMessage = [
+      `Ticker: ${ticker}`,
+      `Current Price: $${currentPrice.toFixed(2)}`,
+      `ATR (14-day): $${atr.toFixed(2)}`,
+      '',
+      `Normalized Scores: Financial=${normalizedScores.financialScore.toFixed(0)}/100, News=${normalizedScores.newsScore.toFixed(0)}/100, Technical=${normalizedScores.technicalScore.toFixed(0)}/100, Overall=${normalizedScores.overallScore.toFixed(0)}/100`,
+      '',
+      `Technical Signals: Trend=${technicalData.signals.trend}, Momentum=${technicalData.signals.momentum}, Volatility=${technicalData.signals.volatility}, Volume=${technicalData.signals.volume}, Overall=${technicalData.signals.overall}`,
+      `RSI(14)=${technicalData.indicators.rsi14?.toFixed(1) ?? 'N/A'}, MACD=${technicalData.indicators.macd?.toFixed(3) ?? 'N/A'} vs Signal=${technicalData.indicators.macdSignal?.toFixed(3) ?? 'N/A'}`,
+      `52W range: $${technicalData.priceData.low52w?.toFixed(2) ?? 'N/A'} – $${technicalData.priceData.high52w?.toFixed(2) ?? 'N/A'}`,
+      '',
+      `Financial Ratios: GrossMargin=${financialData.ratios.grossMargin != null ? (financialData.ratios.grossMargin * 100).toFixed(1) + '%' : 'N/A'}, NetMargin=${financialData.ratios.netMargin != null ? (financialData.ratios.netMargin * 100).toFixed(1) + '%' : 'N/A'}, D/E=${financialData.ratios.debtToEquity?.toFixed(2) ?? 'N/A'}, CurrentRatio=${financialData.ratios.currentRatio?.toFixed(2) ?? 'N/A'}, RevenueGrowthYoY=${financialData.ratios.revenueGrowthYoY != null ? (financialData.ratios.revenueGrowthYoY * 100).toFixed(1) + '%' : 'N/A'}`,
+      '',
+      `News Sentiment: ${newsData.overallSentiment?.label ?? 'neutral'} (score=${newsData.overallSentiment?.score?.toFixed(2) ?? '0'}), Articles=${newsData.articles.length}`,
+    ].join('\n');
+
+    const response = await client.responses.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+      input: [
+        { role: 'system', content: [{ type: 'input_text', text: systemPrompt }] },
+        { role: 'user', content: [{ type: 'input_text', text: userMessage }] },
+      ],
+    });
+
+    const text = response.output_text.trim().replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const parsed = JSON.parse(text) as RiskAssessmentData;
+    parsed.timestamp = new Date().toISOString();
+    parsed.ticker = ticker;
+    return parsed;
+  } catch (error) {
+    console.error('[generateRiskAssessment] LLM call failed:', error);
+    return fallback;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Investment Decision — LLM produces buy/hold/sell + entry, stop-loss, targets
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Calls the LLM to produce the final investment decision for a stock.
+ * Takes all prior analysis (scores + risk) and outputs a DecisionData JSON.
+ */
+export async function generateInvestmentDecision(params: {
+  ticker: string;
+  currentPrice: number;
+  normalizedScores: NormalizedScores;
+  riskAssessment: RiskAssessmentData;
+  financialData: FinancialData;
+  technicalData: TechnicalData;
+  newsData: NewsData;
+}): Promise<DecisionData> {
+  const { ticker, currentPrice, normalizedScores, riskAssessment, financialData, technicalData, newsData } = params;
+  const client = getOpenAIClient();
+
+  const fallback: DecisionData = {
+    ticker,
+    timestamp: new Date().toISOString(),
+    recommendation: normalizedScores.overallScore >= 60 ? 'buy' : normalizedScores.overallScore >= 40 ? 'hold' : 'sell',
+    confidenceScore: Math.abs(normalizedScores.overallScore - 50) + 50,
+    entryPrice: currentPrice,
+    stopLossPrice: riskAssessment.stopLossPrice,
+    takeProfitTargets: riskAssessment.takeProfitTargets,
+    timeHorizon: 'medium-term',
+    reasoning: `Based on composite score of ${normalizedScores.overallScore.toFixed(0)}/100. Financial: ${normalizedScores.financialScore.toFixed(0)}/100, News: ${normalizedScores.newsScore.toFixed(0)}/100, Technical: ${normalizedScores.technicalScore.toFixed(0)}/100.`,
+    keyBullishFactors: [],
+    keyBearishFactors: [],
+    componentScores: {
+      financialScore: normalizedScores.financialScore,
+      newsScore: normalizedScores.newsScore,
+      technicalScore: normalizedScores.technicalScore,
+      overallScore: normalizedScores.overallScore,
+    },
+    riskAssessment,
+  };
+
+  if (!client) return fallback;
+
+  try {
+    const systemPrompt = [
+      'You are a senior equity analyst. Respond ONLY with a valid JSON object — no markdown, no extra text.',
+      '',
+      'Produce a DecisionData JSON with these exact fields:',
+      '{',
+      '  "ticker": string,',
+      '  "timestamp": ISO string,',
+      '  "recommendation": "buy"|"hold"|"sell",',
+      '  "confidenceScore": number (0-100, based on strength/consensus of signals),',
+      '  "entryPrice": number (suggested limit order entry price, can equal current price or a slightly lower level),',
+      '  "stopLossPrice": number (from risk assessment),',
+      '  "takeProfitTargets": [{ "label": string, "price": number }],',
+      '  "timeHorizon": "short-term"|"medium-term"|"long-term",',
+      '  "reasoning": string (3-5 sentences explaining the recommendation),',
+      '  "keyBullishFactors": string[] (top 3 bullish factors),',
+      '  "keyBearishFactors": string[] (top 3 risk factors),',
+      '  "riskRewardRatio": number (estimated R:R, e.g. 2.5 means risk 1 to gain 2.5)',
+      '}',
+    ].join('\n');
+
+    const t1 = riskAssessment.takeProfitTargets?.[0]?.price ?? currentPrice * 1.10;
+    const sl = riskAssessment.stopLossPrice ?? currentPrice * 0.93;
+    const rrRatio = currentPrice > sl ? (t1 - currentPrice) / (currentPrice - sl) : 1;
+
+    const userMessage = [
+      `Ticker: ${ticker}`,
+      `Current Price: $${currentPrice.toFixed(2)}`,
+      '',
+      `Composite Score: ${normalizedScores.overallScore.toFixed(0)}/100`,
+      `  ├─ Financial Score: ${normalizedScores.financialScore.toFixed(0)}/100`,
+      `  ├─ News Score: ${normalizedScores.newsScore.toFixed(0)}/100 (sentiment: ${newsData.overallSentiment?.label ?? 'neutral'})`,
+      `  └─ Technical Score: ${normalizedScores.technicalScore.toFixed(0)}/100 (overall signal: ${technicalData.signals.overall})`,
+      '',
+      `Risk Assessment:`,
+      `  Overall Risk: ${riskAssessment.riskScores.overallRisk}/100`,
+      `  Stop-Loss: $${riskAssessment.stopLossPrice?.toFixed(2) ?? 'N/A'}`,
+      `  Take-Profit targets: ${(riskAssessment.takeProfitTargets ?? []).map(t => `${t.label} @ $${t.price.toFixed(2)}`).join(', ')}`,
+      `  Est. R:R Ratio: ${rrRatio.toFixed(2)}`,
+      `  Risk Summary: ${riskAssessment.riskSummary}`,
+      '',
+      `Technical Signals: Trend=${technicalData.signals.trend}, Momentum=${technicalData.signals.momentum}, RSI=${technicalData.indicators.rsi14?.toFixed(1) ?? 'N/A'}`,
+      '',
+      `Financial Highlights: NetMargin=${financialData.ratios.netMargin != null ? (financialData.ratios.netMargin * 100).toFixed(1) + '%' : 'N/A'}, RevenueGrowthYoY=${financialData.ratios.revenueGrowthYoY != null ? (financialData.ratios.revenueGrowthYoY * 100).toFixed(1) + '%' : 'N/A'}, FreeCashFlow=${financialData.fundamentals.freeCashFlow != null ? (financialData.fundamentals.freeCashFlow > 0 ? 'positive' : 'negative') : 'N/A'}`,
+      '',
+      `News: ${newsData.articles.length} articles, overall sentiment=${newsData.overallSentiment?.label ?? 'neutral'}`,
+    ].join('\n');
+
+    const response = await client.responses.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+      input: [
+        { role: 'system', content: [{ type: 'input_text', text: systemPrompt }] },
+        { role: 'user', content: [{ type: 'input_text', text: userMessage }] },
+      ],
+    });
+
+    const text = response.output_text.trim().replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const parsed = JSON.parse(text) as DecisionData;
+    parsed.timestamp = new Date().toISOString();
+    parsed.ticker = ticker;
+    parsed.componentScores = {
+      financialScore: normalizedScores.financialScore,
+      newsScore: normalizedScores.newsScore,
+      technicalScore: normalizedScores.technicalScore,
+      overallScore: normalizedScores.overallScore,
+    };
+    parsed.riskAssessment = riskAssessment;
+    return parsed;
+  } catch (error) {
+    console.error('[generateInvestmentDecision] LLM call failed:', error);
+    return { ...fallback, riskAssessment };
   }
 }

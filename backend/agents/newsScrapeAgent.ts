@@ -2,11 +2,93 @@ import Exa from 'exa-js';
 
 import { NEWS_SCRAPE_AGENT } from '@/lib/agent-chat';
 import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/toolAgents';
+import { NewsData } from '@/lib/stockAnalysisInterfaces';
 
 const exa = new Exa(process.env.EXA_API_KEY || '');
 
 /* ──────────────────────────────────────────────────────────────────────────────
  * Extract ticker symbol from user input (reuse from stockDataAgent)
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Helpers — news data conversion
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+function buildNewsData(ticker: string, newsItems: Array<{title: string, url: string, publishedDate: string}>): NewsData {
+  // Simple sentiment analysis based on keywords (in a real implementation, you'd use NLP)
+  const positiveKeywords = ['growth', 'profit', 'beat', 'exceed', 'upgrade', 'buy', 'outperform', 'strong', 'gain', 'rise'];
+  const negativeKeywords = ['loss', 'decline', 'miss', 'downgrade', 'sell', 'underperform', 'weak', 'fall', 'drop', 'risk'];
+  
+  const analyzedArticles = newsItems.map(item => {
+    const titleLower = item.title.toLowerCase();
+    let sentimentScore = 0;
+    
+    positiveKeywords.forEach(keyword => {
+      if (titleLower.includes(keyword)) sentimentScore += 0.2;
+    });
+    
+    negativeKeywords.forEach(keyword => {
+      if (titleLower.includes(keyword)) sentimentScore -= 0.2;
+    });
+    
+    // Clamp score between -1 and 1
+    sentimentScore = Math.max(-1, Math.min(1, sentimentScore));
+    
+    const sentimentLabel: 'negative' | 'neutral' | 'positive' = 
+      sentimentScore < -0.1 ? 'negative' :
+      sentimentScore > 0.1 ? 'positive' :
+      'neutral';
+    
+    return {
+      title: item.title,
+      url: item.url,
+      publishedDate: item.publishedDate,
+      source: item.url.includes('bloomberg') ? 'Bloomberg' :
+             item.url.includes('reuters') ? 'Reuters' :
+             item.url.includes('cnbc') ? 'CNBC' :
+             item.url.includes('wsj') ? 'WSJ' :
+             item.url.includes('ft') ? 'Financial Times' :
+             item.url.includes('yahoo') ? 'Yahoo Finance' :
+             item.url.includes('marketwatch') ? 'MarketWatch' :
+             item.url.includes('investing') ? 'Investing.com' :
+             item.url.includes('seekingalpha') ? 'Seeking Alpha' :
+             item.url.includes('fool') ? 'Motley Fool' :
+             item.url.includes('nasdaq') ? 'NASDAQ' :
+             item.url.includes('nytimes') ? 'New York Times' :
+             item.url.includes('businessinsider') ? 'Business Insider' :
+             'Unknown',
+      sentimentScore,
+      sentimentLabel
+    };
+  });
+  
+  // Calculate overall sentiment
+  const totalScore = analyzedArticles.reduce((sum, article) => sum + article.sentimentScore, 0);
+  const averageScore = newsItems.length > 0 ? totalScore / newsItems.length : 0;
+  
+  const overallSentimentLabel: 'negative' | 'neutral' | 'positive' = 
+    averageScore < -0.1 ? 'negative' :
+    averageScore > 0.1 ? 'positive' :
+    'neutral';
+  
+  // Create a simple summary
+  const summary = `Found ${newsItems.length} recent news articles about ${ticker}. ` +
+    `Overall sentiment is ${overallSentimentLabel} (score: ${averageScore.toFixed(2)}).`;
+  
+  return {
+    ticker,
+    timestamp: new Date().toISOString(),
+    articles: analyzedArticles,
+    summary,
+    overallSentiment: {
+      score: averageScore,
+      label: overallSentimentLabel
+    }
+  };
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Search news using Exa API
  * ─────────────────────────────────────────────────────────────────────────── */
 
 export function extractTickerSymbol(input: string, extractedTicker?: string): string {
@@ -139,6 +221,9 @@ export async function runNewsScrapeAgent(context: ToolExecutionContext): Promise
   try {
     const newsItems = await searchStockNews(ticker);
     const markdown = buildNewsTable(newsItems, ticker);
+    
+    // Build standardized news data
+    const newsData = buildNewsData(ticker, newsItems);
 
     return {
       agent: NEWS_SCRAPE_AGENT,
@@ -152,6 +237,7 @@ export async function runNewsScrapeAgent(context: ToolExecutionContext): Promise
           url: item.url,
           publishedDate: item.publishedDate,
         })),
+        newsData, // Add the standardized JSON data
       },
     };
   } catch (error) {

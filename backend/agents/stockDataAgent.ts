@@ -2,6 +2,7 @@ import YahooFinance from 'yahoo-finance2';
 
 import { STOCK_DATA_AGENT } from '@/lib/agent-chat';
 import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/toolAgents';
+import { FinancialData } from '@/lib/stockAnalysisInterfaces';
 
 const yahooFinance = new YahooFinance();
 
@@ -56,6 +57,10 @@ interface FTSRow {
  * Helpers — formatting
  * ─────────────────────────────────────────────────────────────────────────── */
 
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Helpers — financial data conversion
+ * ─────────────────────────────────────────────────────────────────────────── */
+
 function fmtNum(value: number | undefined | null, decimals = 2): string {
   if (value == null || isNaN(value)) return '—';
   if (Math.abs(value) >= 1e12) return `${(value / 1e12).toFixed(decimals)}T`;
@@ -79,6 +84,109 @@ function fmtDate(date: Date | string | undefined | null): string {
 function safeDiv(numerator: number | undefined, denominator: number | undefined): number | undefined {
   if (numerator == null || denominator == null || denominator === 0) return undefined;
   return numerator / denominator;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Helpers — financial data conversion
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+function calculateGrowthRate(current: number | undefined, previous: number | undefined): number | undefined {
+  if (current == null || previous == null || previous === 0) return undefined;
+  return (current - previous) / Math.abs(previous);
+}
+
+function buildFinancialData(ticker: string, annual: FTSRow[], quarterly: FTSRow[], price?: { shortName?: string; longName?: string; regularMarketPrice?: number; marketCap?: number; currency?: string; exchange?: string }): FinancialData {
+  const latestAnnual = annual.length > 0 ? annual[annual.length - 1] : undefined;
+  const previousAnnual = annual.length >= 2 ? annual[annual.length - 2] : undefined;
+  
+  // Calculate ratios for latest annual data
+  const grossMargin = safeDiv(latestAnnual?.grossProfit, latestAnnual?.totalRevenue);
+  const operatingMargin = safeDiv(latestAnnual?.operatingIncome, latestAnnual?.totalRevenue);
+  const netMargin = safeDiv(latestAnnual?.netIncome, latestAnnual?.totalRevenue);
+  const ebitdaMargin = safeDiv(latestAnnual?.EBITDA, latestAnnual?.totalRevenue);
+  
+  const currentRatio = safeDiv(latestAnnual?.currentAssets, latestAnnual?.currentLiabilities);
+  const quickRatio = safeDiv((latestAnnual?.currentAssets ?? 0) - (latestAnnual?.inventory ?? 0), latestAnnual?.currentLiabilities);
+  const debtToEquity = safeDiv(latestAnnual?.totalLiabilitiesNetMinorityInterest, latestAnnual?.stockholdersEquity);
+  const assetLiabilityRatio = safeDiv(latestAnnual?.totalLiabilitiesNetMinorityInterest, latestAnnual?.totalAssets);
+  const assetTurnover = safeDiv(latestAnnual?.totalRevenue, latestAnnual?.totalAssets);
+  const receivablesTurnover = safeDiv(latestAnnual?.totalRevenue, latestAnnual?.accountsReceivable);
+  
+  // Calculate YoY growth
+  const revenueGrowthYoY = calculateGrowthRate(latestAnnual?.totalRevenue, previousAnnual?.totalRevenue);
+  const netIncomeGrowthYoY = calculateGrowthRate(latestAnnual?.netIncome, previousAnnual?.netIncome);
+  const operatingIncomeGrowthYoY = calculateGrowthRate(latestAnnual?.operatingIncome, previousAnnual?.operatingIncome);
+  
+  return {
+    ticker,
+    timestamp: new Date().toISOString(),
+    fundamentals: {
+      // Income Statement
+      totalRevenue: latestAnnual?.totalRevenue,
+      costOfRevenue: latestAnnual?.costOfRevenue,
+      grossProfit: latestAnnual?.grossProfit,
+      operatingExpense: latestAnnual?.operatingExpense,
+      operatingIncome: latestAnnual?.operatingIncome,
+      netIncome: latestAnnual?.netIncome,
+      EBITDA: latestAnnual?.EBITDA,
+      EBIT: latestAnnual?.EBIT,
+      researchAndDevelopment: latestAnnual?.researchAndDevelopment,
+      sellingGeneralAndAdministration: latestAnnual?.sellingGeneralAndAdministration,
+      basicEPS: latestAnnual?.basicEPS,
+      dilutedEPS: latestAnnual?.dilutedEPS,
+      
+      // Balance Sheet
+      totalAssets: latestAnnual?.totalAssets,
+      currentAssets: latestAnnual?.currentAssets,
+      currentLiabilities: latestAnnual?.currentLiabilities,
+      totalLiabilitiesNetMinorityInterest: latestAnnual?.totalLiabilitiesNetMinorityInterest,
+      stockholdersEquity: latestAnnual?.stockholdersEquity,
+      longTermDebt: latestAnnual?.longTermDebt,
+      totalDebt: latestAnnual?.totalDebt,
+      cashAndCashEquivalents: latestAnnual?.cashAndCashEquivalents,
+      inventory: latestAnnual?.inventory,
+      accountsReceivable: latestAnnual?.accountsReceivable,
+      accountsPayable: latestAnnual?.accountsPayable,
+      retainedEarnings: latestAnnual?.retainedEarnings,
+      workingCapital: latestAnnual?.workingCapital,
+      netDebt: latestAnnual?.netDebt,
+      
+      // Cash Flow
+      operatingCashFlow: latestAnnual?.operatingCashFlow,
+      investingCashFlow: latestAnnual?.investingCashFlow,
+      financingCashFlow: latestAnnual?.financingCashFlow,
+      capitalExpenditure: latestAnnual?.capitalExpenditure,
+      freeCashFlow: latestAnnual?.freeCashFlow,
+      depreciationAndAmortization: latestAnnual?.depreciationAndAmortization,
+      repurchaseOfCapitalStock: latestAnnual?.repurchaseOfCapitalStock,
+      commonStockDividendPaid: latestAnnual?.commonStockDividendPaid,
+    },
+    ratios: {
+      // Profitability
+      grossMargin,
+      operatingMargin,
+      netMargin,
+      EBITDAMargin: ebitdaMargin,
+      
+      // Liquidity
+      currentRatio,
+      quickRatio,
+      
+      // Leverage
+      debtToEquity,
+      assetLiabilityRatio,
+      
+      // Efficiency
+      assetTurnover,
+      receivablesTurnover,
+      
+      // Growth (YoY)
+      revenueGrowthYoY,
+      netIncomeGrowthYoY,
+      operatingIncomeGrowthYoY,
+    },
+    priceInfo: price
+  };
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
@@ -533,6 +641,9 @@ export async function runStockDataAgent(context: ToolExecutionContext): Promise<
 
     const markdown = buildFinancialReport(ticker, annual, quarterly, price);
     const companyName = price?.longName || price?.shortName || ticker;
+    
+    // Build standardized financial data
+    const financialData = buildFinancialData(ticker, annual, quarterly, price);
 
     return {
       agent: STOCK_DATA_AGENT,
@@ -546,6 +657,7 @@ export async function runStockDataAgent(context: ToolExecutionContext): Promise<
         currentPrice: price?.regularMarketPrice,
         annualPeriods: annual.length,
         quarterlyPeriods: quarterly.length,
+        financialData, // Add the standardized JSON data
       },
     };
   } catch (error) {

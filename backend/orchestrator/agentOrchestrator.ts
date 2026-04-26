@@ -6,6 +6,10 @@ import {
   NEWS_SCRAPE_AGENT,
   NEWS_SUMMARY_AGENT,
   ORCHESTRATOR_AGENT,
+  RISK_ASSESSMENT_AGENT,
+  STOCK_DATA_AGENT,
+  STOCK_DECISION_AGENT,
+  TECHNICAL_ANALYSIS_AGENT,
   chunkText,
   createMessage,
   type ConversationTurn,
@@ -15,13 +19,18 @@ import {
   type UserPreferences,
   type WeatherContext,
 } from '@/lib/agent-chat';
+import type { FinancialData, NewsData, TechnicalData } from '@/lib/stockAnalysisInterfaces';
 import { runCosmeticSafeCheckAgent } from '@backend/agents/cosmeticSafeCheckAgent';
+import { runInvestmentDecision } from '@backend/agents/decisionAgent';
 import {
   buildCombinedScrapeAndSafetyResult,
   scrapeIngredientsOnly,
 } from '@backend/agents/ingredientsScrapeAgent';
 import { runNewsScrapeAgent } from '@backend/agents/newsScrapeAgent';
 import { runNewsSummaryAgent } from '@backend/agents/newsSummaryAgent';
+import { buildNormalizedScores, runRiskAssessment } from '@backend/agents/riskAgent';
+import { runStockDataAgent } from '@backend/agents/stockDataAgent';
+import { runTechnicalAnalysisAgent } from '@backend/agents/technicalAnalysisAgent';
 import {
   getToolDefinition,
   resolveToolRouteWithContext,
@@ -250,7 +259,9 @@ async function intentParserNode(state: OrchestratorStateType) {
   });
 
   if (llmIntent) {
-    const selectedTool: SelectedToolRoute = llmIntent.tool;
+    // 'stock-analysis' is handled by its own streaming workflow before reaching LangGraph;
+    // if somehow it ends up here, fall back to 'none' so the standard pipeline doesn't crash.
+    const selectedTool: SelectedToolRoute = (llmIntent.tool === 'stock-analysis' ? 'none' : llmIntent.tool) as SelectedToolRoute;
     return {
       intent: llmIntent,
       selectedTool,
@@ -878,10 +889,224 @@ async function* streamParallelWorkflow(params: {
 }
 
 /**
+ * Full stock investment analysis workflow.
+ *
+ * Pipeline:
+ *   1. Parse intent, extract ticker
+ *   2. Parallel: Fundamentals (Stock Data Agent) + News (News Scrape Agent) + Technical (Technical Analysis Agent)
+ *   3. Each result emitted as its own chat bubble
+ *   4. Normalize scores (pure function → NormalizedScores JSON)
+ *   5. Risk Agent (LLM) → RiskAssessmentData with stop-loss + take-profit
+ *   6. Decision Agent (LLM) → buy/hold/sell + entry price + confidence + reasoning
+ *   7. Final decision streamed as the last assistant message
+ */
+async function* streamStockAnalysisWorkflow(params: {
+  sessionId: string;
+  input: string;
+  intent: IntentClassification;
+  preferences: UserPreferences;
+  history: ConversationTurn[];
+}): AsyncGenerator<StreamEvent> {
+  const { sessionId, input, intent, preferences, history } = params;
+
+  const ticker = intent.ticker || '';
+
+  /* ── Step 1: Build task list ────────────────────────────────────────── */
+  let tasks: TaskStatus[] = [
+    {
+      id: 'parse-intent',
+      description: 'LLM intent classification',
+      status: 'completed',
+      agent: ORCHESTRATOR_AGENT.name,
+    },
+    {
+      id: 'fundamentals-parallel',
+      description: `[Parallel 1/3] Fetch financial statements — ${ticker || 'Stock Data Agent'}`,
+      status: 'running',
+      agent: STOCK_DATA_AGENT.name,
+    },
+    {
+      id: 'news-parallel',
+      description: `[Parallel 2/3] Scrape recent news — ${ticker || 'News Scrape Agent'}`,
+      status: 'running',
+      agent: NEWS_SCRAPE_AGENT.name,
+    },
+    {
+      id: 'technical-parallel',
+      description: `[Parallel 3/3] Technical indicators — ${ticker || 'Technical Analysis Agent'}`,
+      status: 'running',
+      agent: TECHNICAL_ANALYSIS_AGENT.name,
+    },
+    {
+      id: 'risk-assessment',
+      description: 'Risk assessment + stop-loss/take-profit targets',
+      status: 'pending',
+      agent: RISK_ASSESSMENT_AGENT.name,
+    },
+    {
+      id: 'investment-decision',
+      description: 'Investment decision: buy/hold/sell + entry price + reasoning',
+      status: 'pending',
+      agent: STOCK_DECISION_AGENT.name,
+    },
+  ];
+
+  yield { type: 'tasks', tasks };
+
+  const toolContext = {
+    input,
+    preferences,
+    extractedTicker: intent.ticker || undefined,
+  };
+
+  /* ── Step 2: Run fundamentals + news + technical IN PARALLEL ─────────── */
+  const [fundamentalsResult, newsResult, technicalResult] = await Promise.allSettled([
+    runStockDataAgent(toolContext),
+    runNewsScrapeAgent(toolContext),
+    runTechnicalAnalysisAgent(toolContext),
+  ]);
+
+  /* ── Step 3: Update task statuses and emit bubbles ───────────────────── */
+  const fundamentals = fundamentalsResult.status === 'fulfilled' ? fundamentalsResult.value : null;
+  const news = newsResult.status === 'fulfilled' ? newsResult.value : null;
+  const technical = technicalResult.status === 'fulfilled' ? technicalResult.value : null;
+
+  tasks = markTask(tasks, 'fundamentals-parallel', fundamentals ? 'completed' : 'failed');
+  tasks = markTask(tasks, 'news-parallel', news ? 'completed' : 'failed');
+  tasks = markTask(tasks, 'technical-parallel', technical ? 'completed' : 'failed');
+  yield { type: 'tasks', tasks };
+
+  // Emit each result as its own chat bubble
+  if (fundamentals) {
+    const msg = createMessage({ role: 'assistant', content: fundamentals.markdown, agent: STOCK_DATA_AGENT, status: 'done' });
+    appendMessage(sessionId, msg);
+    yield { type: 'agent-done', message: msg };
+  }
+  if (news) {
+    const msg = createMessage({ role: 'assistant', content: news.markdown, agent: NEWS_SCRAPE_AGENT, status: 'done' });
+    appendMessage(sessionId, msg);
+    yield { type: 'agent-done', message: msg };
+  }
+  if (technical) {
+    const msg = createMessage({ role: 'assistant', content: technical.markdown, agent: TECHNICAL_ANALYSIS_AGENT, status: 'done' });
+    appendMessage(sessionId, msg);
+    yield { type: 'agent-done', message: msg };
+  }
+
+  /* ── Step 4: Extract typed data from results ─────────────────────────── */
+  const financialData = fundamentals?.metadata.financialData as FinancialData | undefined;
+  const newsData = news?.metadata.newsData as NewsData | undefined;
+  const technicalData = technical?.metadata.technicalData as TechnicalData | undefined;
+
+  if (!financialData || !newsData || !technicalData) {
+    // If any of the parallel agents failed, we can't run the pipeline
+    const errMessage = createMessage({
+      role: 'assistant',
+      content: [
+        '# ⚠️ Stock Analysis — Incomplete Data',
+        '',
+        'One or more parallel analysis steps failed to return data. Cannot proceed with risk assessment and decision.',
+        '',
+        `- Fundamentals: ${fundamentals ? '✅' : '❌ Failed'}`,
+        `- News: ${news ? '✅' : '❌ Failed'}`,
+        `- Technical: ${technical ? '✅' : '❌ Failed'}`,
+        '',
+        'Please verify the ticker symbol is correct and try again.',
+      ].join('\n'),
+      agent: ORCHESTRATOR_AGENT,
+    });
+    appendMessage(sessionId, errMessage);
+    tasks = markTask(tasks, 'risk-assessment', 'failed');
+    tasks = markTask(tasks, 'investment-decision', 'failed');
+    yield { type: 'tasks', tasks };
+
+    for (const delta of chunkText(errMessage.content)) {
+      yield { type: 'message', delta, agent: ORCHESTRATOR_AGENT };
+      await pause(35);
+    }
+    yield { type: 'done', message: errMessage, tasks, preferences };
+    return;
+  }
+
+  const resolvedTicker = ticker || financialData.ticker || newsData.ticker || technicalData.ticker;
+  const currentPrice =
+    technicalData.priceData.currentPrice ||
+    (financialData.priceInfo?.regularMarketPrice ?? 0);
+
+  /* ── Step 5: Normalize scores ────────────────────────────────────────── */
+  const normalizedScores = buildNormalizedScores(resolvedTicker, financialData, newsData, technicalData);
+
+  /* ── Step 6: Risk Assessment ─────────────────────────────────────────── */
+  tasks = markTask(tasks, 'risk-assessment', 'running');
+  yield { type: 'tasks', tasks };
+
+  const { riskData, markdown: riskMarkdown, agent: riskAgent } = await runRiskAssessment({
+    ticker: resolvedTicker,
+    currentPrice,
+    financialData,
+    newsData,
+    technicalData,
+    normalizedScores,
+  });
+
+  tasks = markTask(tasks, 'risk-assessment', 'completed');
+  yield { type: 'tasks', tasks };
+
+  // Emit risk report as its own bubble
+  const riskMsg = createMessage({ role: 'assistant', content: riskMarkdown, agent: riskAgent, status: 'done' });
+  appendMessage(sessionId, riskMsg);
+  yield { type: 'agent-done', message: riskMsg };
+
+  /* ── Step 7: Investment Decision ─────────────────────────────────────── */
+  tasks = markTask(tasks, 'investment-decision', 'running');
+  yield { type: 'tasks', tasks };
+
+  const { decisionData, markdown: decisionMarkdown, agent: decisionAgent } = await runInvestmentDecision({
+    ticker: resolvedTicker,
+    currentPrice,
+    normalizedScores,
+    riskAssessment: riskData,
+    financialData,
+    newsData,
+    technicalData,
+  });
+
+  tasks = markTask(tasks, 'investment-decision', 'completed');
+  yield { type: 'tasks', tasks };
+
+  /* ── Step 8: Update session preferences ─────────────────────────────── */
+  const updatedSession = updatePreferences(sessionId, {
+    lastUsedAgent: STOCK_DECISION_AGENT.name,
+  });
+
+  /* ── Step 9: Stream the decision as the final message ─────────────────── */
+  const decisionMessage = createMessage({
+    role: 'assistant',
+    content: decisionMarkdown,
+    agent: decisionAgent,
+  });
+
+  for (const delta of chunkText(decisionMarkdown)) {
+    yield { type: 'message', delta, agent: decisionAgent };
+    await pause(35);
+  }
+
+  appendMessage(sessionId, decisionMessage);
+
+  yield {
+    type: 'done',
+    message: decisionMessage,
+    tasks,
+    preferences: updatedSession.preferences,
+  };
+}
+
+/**
  * Main streaming entry point. Routes to the appropriate workflow:
  * - Multiple independent intents → parallel workflow (Promise.all)
  * - `ingredients-scrape` → two-step workflow with intermediate task streaming
  * - `news-summary` → two-step news scrape + summary workflow
+ * - `stock-analysis` → full 7-step investment analysis pipeline
  * - Everything else → standard LangGraph pipeline
  */
 export async function* streamOrchestratorSession(params: {
@@ -966,6 +1191,17 @@ export async function* streamOrchestratorSession(params: {
     return;
   }
 
+  if (intent.tool === 'stock-analysis') {
+    yield* streamStockAnalysisWorkflow({
+      sessionId,
+      input: params.input,
+      intent,
+      preferences: session.preferences,
+      history,
+    });
+    return;
+  }
+
   /* ── Standard LangGraph pipeline for all other tools ────────────────── */
   const result = await orchestratorGraph.invoke({
     input: params.input,
@@ -973,7 +1209,7 @@ export async function* streamOrchestratorSession(params: {
     preferences: session.preferences,
     history,
     intent,
-    selectedTool: intent.tool,
+    selectedTool: intent.tool as SelectedToolRoute,
     tasks: [],
     toolResult: null,
     response: '',

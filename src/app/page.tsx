@@ -31,12 +31,12 @@ export default function Home() {
   };
 
   return (
-    <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="flex h-screen bg-gray-50 dark:bg-gray-900 pb-16 sm:pb-0">
       {/* Sidebar */}
       <Sidebar currentView={currentView} onViewChange={handleViewChange} />
 
       {/* Main Content */}
-      <div className="flex flex-1 ml-16">
+      <div className="flex flex-1 ml-0 sm:ml-16">
         {/* Agents List - Middle Column (only shown when agents view is active) */}
         {currentView === 'agents' && (
           <AgentsList
