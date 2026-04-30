@@ -10,7 +10,10 @@ export type AgentId =
   | 'news-summary'
   | 'technical-analysis'
   | 'risk-assessment'
-  | 'stock-decision';
+  | 'stock-decision'
+  | 'liquidity-filter'
+  | 'screen-hit'
+  | 'final-select';
 
 export interface AgentSummary {
   id: AgentId;
@@ -134,6 +137,24 @@ export const STOCK_DATA_AGENT: AgentSummary = {
   id: 'stock-data',
   name: 'Stock Data Agent',
   icon: '📊',
+};
+
+export const LIQUIDITY_AGENT: AgentSummary = {
+  id: 'liquidity-filter',
+  name: 'Liquidity Filter Agent',
+  icon: '💧',
+};
+
+export const SCREEN_HIT_AGENT: AgentSummary = {
+  id: 'screen-hit',
+  name: 'Screen Hit Agent',
+  icon: '🎯',
+};
+
+export const FINAL_SELECT_AGENT: AgentSummary = {
+  id: 'final-select',
+  name: 'Final Select Agent',
+  icon: '📋',
 };
 
 export const NEWS_SCRAPE_AGENT: AgentSummary = {

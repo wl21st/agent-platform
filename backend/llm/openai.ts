@@ -36,6 +36,9 @@ export type IntentTool =
   | 'news-scrape'
   | 'news-summary'
   | 'stock-analysis'
+  | 'liquidity-filter'
+  | 'screen-hit'
+  | 'final-select'
   | 'none';
 
 const VALID_INTENT_TOOLS: IntentTool[] = [
@@ -48,6 +51,9 @@ const VALID_INTENT_TOOLS: IntentTool[] = [
   'news-scrape',
   'news-summary',
   'stock-analysis',
+  'liquidity-filter',
+  'screen-hit',
+  'final-select',
   'none',
 ];
 
@@ -120,6 +126,12 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     '                        asks "should I buy X?", "can I buy X now?", "is X a good investment?",',
     '                        or requests a comprehensive stock analysis with a recommendation.',
     '                        Extract the ticker symbol into the "ticker" field.',
+    '  final-select        — For scanning today\'s US stock market and selecting the top stock ideas.',
+    '                        Trigger when the user asks to scan today\'s US stocks, scan the US market,',
+    '                        scan S&P 500, scan Nasdaq 100, scan for US stock opportunities,',
+    '                        or asks in Chinese like "扫描今天的美股", "扫描标普500", "扫描纳斯达克100".',
+    '                        The orchestrator will coordinate Liquidity Filter Agent, Screen Hit Agent,',
+    '                        and Final Select Agent sequentially.',
     '  none               — For follow-up questions, conversational messages, temperature conversions,',
     '                        greetings, or anything that can be answered from context.',
     '',
@@ -144,6 +156,8 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
     '- If the user asks whether to BUY or SELL a stock, wants an investment recommendation, asks',
     '  "should I buy X?", "can I buy X now?", "is now a good time to buy X?", "is X a good buy?",',
     '  set tool to "stock-analysis". Extract the ticker into the "ticker" field.',
+    '- If the user asks to scan today\'s US stocks / US market / S&P 500 / Nasdaq 100, set tool to "final-select".',
+    '  This is a single multi-step workflow, so do NOT split it into parallel intents.',
     '- For greetings, general chat, or follow-up questions, set tool to "none".',
     '',
     'PARALLEL INTENT DETECTION (IMPORTANT):',
@@ -807,6 +821,22 @@ export async function generateRiskAssessment(params: {
     console.error('[generateRiskAssessment] LLM call failed:', error);
     return fallback;
   }
+}
+
+/**
+ * Simple LLM call for text generation
+ */
+export async function callLLM(params: { messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>; temperature?: number }): Promise<{ content: string }> {
+  const client = getOpenAIClient();
+  if (!client) throw new Error('OpenAI client not available');
+
+  const response = await client.chat.completions.create({
+    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    messages: params.messages,
+    temperature: params.temperature || 0.7,
+  });
+
+  return { content: response.choices[0]?.message?.content || '' };
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

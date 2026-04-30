@@ -2,11 +2,14 @@ import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 
 import {
   COSMETIC_SAFE_CHECK_AGENT,
+  FINAL_SELECT_AGENT,
   INGREDIENTS_SCRAPE_AGENT,
+  LIQUIDITY_AGENT,
   NEWS_SCRAPE_AGENT,
   NEWS_SUMMARY_AGENT,
   ORCHESTRATOR_AGENT,
   RISK_ASSESSMENT_AGENT,
+  SCREEN_HIT_AGENT,
   STOCK_DATA_AGENT,
   STOCK_DECISION_AGENT,
   TECHNICAL_ANALYSIS_AGENT,
@@ -22,13 +25,16 @@ import {
 import type { FinancialData, NewsData, TechnicalData } from '@/lib/stockAnalysisInterfaces';
 import { runCosmeticSafeCheckAgent } from '@backend/agents/cosmeticSafeCheckAgent';
 import { runInvestmentDecision } from '@backend/agents/decisionAgent';
+import { runFinalSelectAgent } from '@backend/agents/finalSelectAgent';
 import {
   buildCombinedScrapeAndSafetyResult,
   scrapeIngredientsOnly,
 } from '@backend/agents/ingredientsScrapeAgent';
+import { runLiquidityAgent } from '@backend/agents/liquidityAgent';
 import { runNewsScrapeAgent } from '@backend/agents/newsScrapeAgent';
 import { runNewsSummaryAgent } from '@backend/agents/newsSummaryAgent';
 import { buildNormalizedScores, runRiskAssessment } from '@backend/agents/riskAgent';
+import { runScreenHitAgent } from '@backend/agents/screenHitAgent';
 import { runStockDataAgent } from '@backend/agents/stockDataAgent';
 import { runTechnicalAnalysisAgent } from '@backend/agents/technicalAnalysisAgent';
 import {
@@ -557,6 +563,215 @@ async function* streamNewsSummaryWorkflow(params: {
   yield {
     type: 'done',
     message: assistantMessage,
+    tasks,
+    preferences: updatedSession.preferences,
+  };
+}
+
+/**
+ * US stock scan workflow coordinated by the Orchestrator.
+ *
+ * Pipeline:
+ *   1. Liquidity Filter Agent runs the liquidity script against the default US universe
+ *   2. Screen Hit Agent runs all technical screening scripts against liquid tickers
+ *   3. Final Select Agent receives screening hits and displays the top 10 table
+ */
+async function* streamUsStockScanWorkflow(params: {
+  sessionId: string;
+  input: string;
+  preferences: UserPreferences;
+}): AsyncGenerator<StreamEvent> {
+  const { sessionId, input, preferences } = params;
+
+  let tasks: TaskStatus[] = [
+    {
+      id: 'parse-intent',
+      description: 'LLM intent classification',
+      status: 'completed',
+      agent: ORCHESTRATOR_AGENT.name,
+    },
+    {
+      id: 'liquidity-filter-tool',
+      description: 'Load requested stock universe and run liquidity filter',
+      status: 'running',
+      agent: LIQUIDITY_AGENT.name,
+    },
+    {
+      id: 'screen-hit-tool',
+      description: 'Run trend, pullback, and momentum screening on liquid stocks',
+      status: 'pending',
+      agent: SCREEN_HIT_AGENT.name,
+    },
+    {
+      id: 'final-select-tool',
+      description: 'Show the final top 10 stocks in table format',
+      status: 'pending',
+      agent: FINAL_SELECT_AGENT.name,
+    },
+  ];
+
+  yield { type: 'tasks', tasks };
+
+  const liquidityResult = await runLiquidityAgent({
+    input,
+    preferences,
+  });
+
+  const liquidityUniverse = liquidityResult.metadata.universe as { label?: string; tickers?: string[] } | undefined;
+  const universeLabel = typeof liquidityUniverse?.label === 'string'
+    ? liquidityUniverse.label
+    : 'Requested stock universe';
+
+  const liquidStocks = Array.isArray(liquidityResult.metadata.results)
+    ? liquidityResult.metadata.results
+    : [];
+  const liquidTickers = liquidStocks
+    .map((stock) => {
+      if (stock && typeof stock === 'object' && 'ticker' in stock) {
+        return String(stock.ticker).toUpperCase();
+      }
+      return '';
+    })
+    .filter((ticker) => ticker.length > 0);
+  const totalUniverseTickers = Array.isArray(liquidityUniverse?.tickers)
+    ? liquidityUniverse.tickers.length
+    : liquidTickers.length;
+
+  tasks = markTask(tasks, 'liquidity-filter-tool', liquidTickers.length > 0 ? 'completed' : 'failed');
+  yield { type: 'tasks', tasks };
+
+  const liquidityMessage = createMessage({
+    role: 'assistant',
+    content: liquidityResult.markdown,
+    agent: LIQUIDITY_AGENT,
+    status: 'done',
+  });
+  appendMessage(sessionId, liquidityMessage);
+  yield { type: 'agent-done', message: liquidityMessage };
+
+  if (liquidTickers.length === 0) {
+    tasks = markTask(tasks, 'screen-hit-tool', 'failed');
+    tasks = markTask(tasks, 'final-select-tool', 'failed');
+    yield { type: 'tasks', tasks };
+
+    const noLiquidityMarkdown = [
+      '# US Stock Scan',
+      '',
+      'No stocks passed the liquidity filter, so technical screening and final selection were skipped.',
+      '',
+      `Universe scanned: ${universeLabel}`,
+      `Symbols loaded: ${totalUniverseTickers}`,
+    ].join('\n');
+
+    const noLiquidityMessage = createMessage({
+      role: 'assistant',
+      content: noLiquidityMarkdown,
+      agent: ORCHESTRATOR_AGENT,
+    });
+    appendMessage(sessionId, noLiquidityMessage);
+
+    for (const delta of chunkText(noLiquidityMarkdown)) {
+      yield { type: 'message', delta, agent: ORCHESTRATOR_AGENT };
+      await pause(35);
+    }
+
+    const updatedSession = updatePreferences(sessionId, { lastUsedAgent: LIQUIDITY_AGENT.name });
+    yield { type: 'done', message: noLiquidityMessage, tasks, preferences: updatedSession.preferences };
+    return;
+  }
+
+  tasks = markTask(tasks, 'screen-hit-tool', 'running');
+  yield { type: 'tasks', tasks };
+
+  const screenResult = await runScreenHitAgent({
+    input: `all setups: ${liquidTickers.join(', ')}`,
+    preferences,
+  });
+
+  const screenHits = Array.isArray(screenResult.metadata.results)
+    ? screenResult.metadata.results
+    : [];
+
+  tasks = markTask(tasks, 'screen-hit-tool', screenHits.length > 0 ? 'completed' : 'failed');
+  yield { type: 'tasks', tasks };
+
+  const screenMessage = createMessage({
+    role: 'assistant',
+    content: screenResult.markdown,
+    agent: SCREEN_HIT_AGENT,
+    status: 'done',
+  });
+  appendMessage(sessionId, screenMessage);
+  yield { type: 'agent-done', message: screenMessage };
+
+  if (screenHits.length === 0) {
+    tasks = markTask(tasks, 'final-select-tool', 'failed');
+    yield { type: 'tasks', tasks };
+
+    const noHitsMarkdown = [
+      '# US Stock Scan',
+      '',
+      `Liquidity Filter Agent found ${liquidTickers.length} liquid stocks, but Screen Hit Agent found no trend, pullback, or momentum hits.`,
+      '',
+      'No top 10 table was generated because there are no final candidates today.',
+    ].join('\n');
+
+    const noHitsMessage = createMessage({
+      role: 'assistant',
+      content: noHitsMarkdown,
+      agent: ORCHESTRATOR_AGENT,
+    });
+    appendMessage(sessionId, noHitsMessage);
+
+    for (const delta of chunkText(noHitsMarkdown)) {
+      yield { type: 'message', delta, agent: ORCHESTRATOR_AGENT };
+      await pause(35);
+    }
+
+    const updatedSession = updatePreferences(sessionId, { lastUsedAgent: SCREEN_HIT_AGENT.name });
+    yield { type: 'done', message: noHitsMessage, tasks, preferences: updatedSession.preferences };
+    return;
+  }
+
+  tasks = markTask(tasks, 'final-select-tool', 'running');
+  yield { type: 'tasks', tasks };
+
+  const finalResult = await runFinalSelectAgent({
+    input: JSON.stringify(screenHits),
+    preferences,
+  });
+
+  tasks = markTask(tasks, 'final-select-tool', 'completed');
+  yield { type: 'tasks', tasks };
+
+  const finalMarkdown = [
+    '# Today\'s US Stock Scan - Top 10',
+    '',
+    `Universe: ${universeLabel}`,
+    `Liquidity Filter Agent: ${liquidTickers.length}/${totalUniverseTickers} symbols passed`,
+    `Screen Hit Agent: ${screenHits.length} technical hits found`,
+    '',
+    finalResult.markdown,
+  ].join('\n');
+
+  const finalMessage = createMessage({
+    role: 'assistant',
+    content: finalMarkdown,
+    agent: FINAL_SELECT_AGENT,
+  });
+
+  for (const delta of chunkText(finalMarkdown)) {
+    yield { type: 'message', delta, agent: FINAL_SELECT_AGENT };
+    await pause(35);
+  }
+
+  appendMessage(sessionId, finalMessage);
+
+  const updatedSession = updatePreferences(sessionId, { lastUsedAgent: FINAL_SELECT_AGENT.name });
+
+  yield {
+    type: 'done',
+    message: finalMessage,
     tasks,
     preferences: updatedSession.preferences,
   };
@@ -1107,6 +1322,7 @@ async function* streamStockAnalysisWorkflow(params: {
  * - `ingredients-scrape` → two-step workflow with intermediate task streaming
  * - `news-summary` → two-step news scrape + summary workflow
  * - `stock-analysis` → full 7-step investment analysis pipeline
+ * - `final-select` US stock scan → Liquidity Filter → Screen Hit → Final Select
  * - Everything else → standard LangGraph pipeline
  */
 export async function* streamOrchestratorSession(params: {
@@ -1198,6 +1414,15 @@ export async function* streamOrchestratorSession(params: {
       intent,
       preferences: session.preferences,
       history,
+    });
+    return;
+  }
+
+  if (intent.tool === 'final-select' && /(scan|扫描|美股|market|s\s*&\s*p\s*500|sp\s*500|标普\s*500|標普\s*500|nasdaq\s*100|纳斯达克\s*100|納斯達克\s*100|纳指\s*100|納指\s*100)/i.test(params.input)) {
+    yield* streamUsStockScanWorkflow({
+      sessionId,
+      input: params.input,
+      preferences: session.preferences,
     });
     return;
   }

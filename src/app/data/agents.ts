@@ -111,5 +111,26 @@ export const agents: Agent[] = [
     description: 'Produces the final AI-powered investment recommendation (Buy / Hold / Sell) by combining fundamental analysis, news sentiment, technical indicators, and risk assessment. Provides confidence scores, suggested entry price, stop-loss, take-profit targets, risk/reward ratio, and key bullish and bearish factors with full reasoning.',
     capabilities: ['Buy / Hold / Sell recommendation', 'Confidence score (0–100)', 'Entry, stop-loss & take-profit levels', 'Risk/reward ratio', 'Bullish & bearish factor summary', 'Time horizon guidance'],
     icon: '🎯'
+  },
+  {
+    id: 'liquidity-filter',
+    name: 'Liquidity Filter Agent',
+    description: 'Filters stocks based on liquidity criteria: price >= $10 and average daily volume >= 2M shares over the last 20 trading days. Returns filtered stock list in JSON format.',
+    capabilities: ['Stock liquidity filtering', 'Volume analysis', 'Price screening', 'Bulk stock processing'],
+    icon: '💧'
+  },
+  {
+    id: 'screen-hit',
+    name: 'Screen Hit Agent',
+    description: 'Screens stocks for technical setups (trend, pullback, momentum) using strict criteria. Returns only stocks that pass screening in ScreenHit format, optimized for LLM consumption.',
+    capabilities: ['Trend screening', 'Pullback screening', 'Momentum screening', 'Technical analysis', 'Token-efficient output'],
+    icon: '🎯'
+  },
+  {
+    id: 'final-select',
+    name: 'Final Select Agent',
+    description: 'Displays the final top 10 stocks from the orchestrated US stock scan workflow after liquidity filtering and technical screening, with entry zones, stops, and targets in table format.',
+    capabilities: ['Final top 10 selection', 'Trade plan generation', 'Risk management', 'Entry/exit strategy', 'Investment planning'],
+    icon: '📋'
   }
 ];

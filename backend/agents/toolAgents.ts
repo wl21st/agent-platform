@@ -1,9 +1,12 @@
 import {
   COSMETIC_SAFE_CHECK_AGENT,
+  FINAL_SELECT_AGENT,
   INGREDIENTS_SCRAPE_AGENT,
+  LIQUIDITY_AGENT,
   NEWS_SCRAPE_AGENT,
   NEWS_SUMMARY_AGENT,
   ORCHESTRATOR_AGENT,
+  SCREEN_HIT_AGENT,
   SEARCH_AGENT,
   STOCK_DATA_AGENT,
   WEATHER_AGENT,
@@ -13,16 +16,19 @@ import {
   type WeatherContext,
 } from '@/lib/agent-chat';
 import { runCosmeticSafeCheckAgent } from '@backend/agents/cosmeticSafeCheckAgent';
+import { runFinalSelectAgent } from '@backend/agents/finalSelectAgent';
 import { runIngredientsScrapeAgent } from '@backend/agents/ingredientsScrapeAgent';
+import { runLiquidityAgent } from '@backend/agents/liquidityAgent';
 import { runNewsScrapeAgent } from '@backend/agents/newsScrapeAgent';
 import { runNewsSummaryAgent } from '@backend/agents/newsSummaryAgent';
+import { runScreenHitAgent } from '@backend/agents/screenHitAgent';
 import { runStockDataAgent } from '@backend/agents/stockDataAgent';
 import { runTechnicalAnalysisAgent } from '@backend/agents/technicalAnalysisAgent';
 import { runWebpageSummarizeAgent } from '@backend/agents/webpageSummarizeAgent';
 import { runWeatherAgent } from '@backend/agents/weatherAgent';
 import { runSearchAgent, extractSearchTopic } from '@backend/agents/searchAgent';
 
-export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data' | 'news-scrape' | 'news-summary' | 'stock-analysis';
+export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-safe-check' | 'ingredients-scrape' | 'stock-data' | 'news-scrape' | 'news-summary' | 'stock-analysis' | 'liquidity-filter' | 'screen-hit' | 'final-select';
 
 export interface ToolExecutionContext {
   input: string;
@@ -131,6 +137,39 @@ export const TOOL_REGISTRY: Record<ToolRoute, ToolDefinition> = {
       lastUsedAgent: STOCK_DATA_AGENT.name,
     }),
   },
+  'liquidity-filter': {
+    route: 'liquidity-filter',
+    taskId: 'liquidity-filter-tool',
+    taskDescription: 'Filter stocks based on liquidity criteria using Liquidity Filter Agent',
+    keywords: /(liquidity|filter|筛选|股票筛选|流动性|volume|交易量|股价|price|\$[A-Za-z]{1,6}\b.*filter|ticker.*filter)/i,
+    agentName: LIQUIDITY_AGENT.name,
+    execute: runLiquidityAgent,
+    buildPreferenceUpdates: () => ({
+      lastUsedAgent: LIQUIDITY_AGENT.name,
+    }),
+  },
+  'screen-hit': {
+    route: 'screen-hit',
+    taskId: 'screen-hit-tool',
+    taskDescription: 'Screen stocks for technical setups using Screen Hit Agent',
+    keywords: /(screen|screening|trend|pullback|momentum|setup|technical|setup|\$[A-Za-z]{1,6}\b.*screen|ticker.*screen)/i,
+    agentName: SCREEN_HIT_AGENT.name,
+    execute: runScreenHitAgent,
+    buildPreferenceUpdates: () => ({
+      lastUsedAgent: SCREEN_HIT_AGENT.name,
+    }),
+  },
+  'final-select': {
+    route: 'final-select',
+    taskId: 'final-select-tool',
+    taskDescription: 'Generate trade plans for final candidate stocks using Final Select Agent',
+    keywords: /(scan.*stock|stock.*scan|scan.*us|us.*scan|market.*scan|scan.*today|今日.*扫描|扫描.*美股|美股.*扫描|final|select|trade.*plan|plan|entry|stop|target|investment.*plan|\$[A-Za-z]{1,6}\b.*plan|ticker.*plan)/i,
+    agentName: FINAL_SELECT_AGENT.name,
+    execute: runFinalSelectAgent,
+    buildPreferenceUpdates: () => ({
+      lastUsedAgent: FINAL_SELECT_AGENT.name,
+    }),
+  },
   'news-scrape': {
     route: 'news-scrape',
     taskId: 'news-scrape-tool',
@@ -218,6 +257,10 @@ export function resolveToolRouteWithContext(context: {
   // they will be answered from stored context or by the LLM.
   if (isConversionFollowUp(context.input, context.preferences)) {
     return 'none';
+  }
+
+  if (/(scan.*stock|stock.*scan|scan.*us|us.*scan|market.*scan|scan.*today|scan.*s\s*&\s*p\s*500|scan.*sp\s*500|scan.*nasdaq\s*100|今日.*扫描|扫描.*美股|美股.*扫描|扫描.*标普\s*500|扫描.*標普\s*500|扫描.*纳斯达克\s*100|扫描.*納斯達克\s*100|扫描.*纳指\s*100|扫描.*納指\s*100)/i.test(context.input)) {
+    return 'final-select';
   }
 
   const directMatch = resolveToolRoute(context.input);
