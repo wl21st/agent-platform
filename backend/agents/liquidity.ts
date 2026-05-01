@@ -16,12 +16,15 @@ const MIN_PRICE = 10;
 const MIN_AVG_VOLUME_20 = 2_000_000;
 const MIN_HISTORY_BARS = 20;
 
-export type LiquidityUniverseKey = 'sp500' | 'nasdaq100' | 'default';
+export type LiquidityUniverseKey = 'sp500' | 'nasdaq100' | 'nasdaq' | 'nyse' | 'us-listed' | 'default';
+
+type WikipediaUniverseKey = Extract<LiquidityUniverseKey, 'sp500' | 'nasdaq100' | 'default'>;
+type NasdaqTraderUniverseKey = Extract<LiquidityUniverseKey, 'nasdaq' | 'nyse' | 'us-listed'>;
 
 export interface LiquidityUniverse {
   key: LiquidityUniverseKey;
   label: string;
-  source: 'wikipedia-constituents' | 'yahoo-finance2-top-holdings' | 'explicit-tickers' | 'fallback-default';
+  source: 'wikipedia-constituents' | 'nasdaq-trader-symbol-directory' | 'yahoo-finance2-top-holdings' | 'explicit-tickers' | 'fallback-default';
   sourceSymbol?: string;
   sourceUrl?: string;
   tickers: string[];
@@ -33,13 +36,13 @@ const FALLBACK_DEFAULT_TICKERS = [
   'SPY', 'QQQ', 'IWM', 'VTI', 'VOO', 'BND', 'AGG', 'VEA', 'VWO', 'VIG',
 ];
 
-const YAHOO_HOLDINGS_UNIVERSES: Record<LiquidityUniverseKey, { label: string; sourceSymbol: string }> = {
+const YAHOO_HOLDINGS_UNIVERSES: Record<WikipediaUniverseKey, { label: string; sourceSymbol: string }> = {
   default: { label: 'Default US stock universe via SPY holdings', sourceSymbol: 'SPY' },
   sp500: { label: 'S&P 500 via SPY holdings', sourceSymbol: 'SPY' },
   nasdaq100: { label: 'Nasdaq 100 via QQQ holdings', sourceSymbol: 'QQQ' },
 };
 
-const WIKIPEDIA_CONSTITUENT_UNIVERSES: Record<LiquidityUniverseKey, { label: string; sourceUrl: string }> = {
+const WIKIPEDIA_CONSTITUENT_UNIVERSES: Record<WikipediaUniverseKey, { label: string; sourceUrl: string }> = {
   default: {
     label: 'Default US stock universe via S&P 500 constituents',
     sourceUrl: 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies',
@@ -54,6 +57,9 @@ const WIKIPEDIA_CONSTITUENT_UNIVERSES: Record<LiquidityUniverseKey, { label: str
   },
 };
 
+const NASDAQ_LISTED_URL = 'https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt';
+const OTHER_LISTED_URL = 'https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt';
+
 type YahooTopHolding = {
   symbol?: string;
 };
@@ -64,6 +70,33 @@ function normalizeTicker(ticker: string) {
 
 function uniqueTickers(tickers: string[]) {
   return [...new Set(tickers.map(normalizeTicker).filter((ticker) => /^[A-Z][A-Z0-9-]{0,9}$/.test(ticker)))];
+}
+
+function parsePipeDelimitedRows(text: string) {
+  const lines = text.trim().split(/\r?\n/).filter((line) => line.includes('|'));
+  const [headerLine, ...dataLines] = lines;
+  const headers = headerLine?.split('|') ?? [];
+
+  return dataLines.flatMap((line) => {
+    const values = line.split('|');
+    if (values.length !== headers.length) return [];
+
+    return [Object.fromEntries(headers.map((header, index) => [header, values[index]])) as Record<string, string>];
+  });
+}
+
+async function fetchText(url: string) {
+  const response = await fetch(url, {
+    headers: {
+      'user-agent': 'agentsplatform-liquidity-agent/1.0',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch ${url}: ${response.status}`);
+  }
+
+  return response.text();
 }
 
 function stripHtml(value: string) {
@@ -89,19 +122,9 @@ function extractFirstColumnTickersFromHtmlTable(html: string) {
   );
 }
 
-async function fetchWikipediaConstituentTickers(key: LiquidityUniverseKey): Promise<LiquidityUniverse> {
+async function fetchWikipediaConstituentTickers(key: WikipediaUniverseKey): Promise<LiquidityUniverse> {
   const config = WIKIPEDIA_CONSTITUENT_UNIVERSES[key];
-  const response = await fetch(config.sourceUrl, {
-    headers: {
-      'user-agent': 'agentsplatform-liquidity-agent/1.0',
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch constituents from ${config.sourceUrl}: ${response.status}`);
-  }
-
-  const html = await response.text();
+  const html = await fetchText(config.sourceUrl);
   const tickers = extractFirstColumnTickersFromHtmlTable(html);
 
   if (tickers.length === 0) {
@@ -117,6 +140,65 @@ async function fetchWikipediaConstituentTickers(key: LiquidityUniverseKey): Prom
   };
 }
 
+async function fetchNasdaqListedTickers() {
+  const text = await fetchText(NASDAQ_LISTED_URL);
+  const rows = parsePipeDelimitedRows(text);
+
+  return uniqueTickers(
+    rows.flatMap((row) => {
+      if (row['Test Issue'] !== 'N' || row.ETF !== 'N') return [];
+      return [row.Symbol ?? ''];
+    }),
+  );
+}
+
+async function fetchOtherListedTickers(exchange: string) {
+  const text = await fetchText(OTHER_LISTED_URL);
+  const rows = parsePipeDelimitedRows(text);
+
+  return uniqueTickers(
+    rows.flatMap((row) => {
+      if (row.Exchange !== exchange || row['Test Issue'] !== 'N' || row.ETF !== 'N') return [];
+      return [row['ACT Symbol'] ?? ''];
+    }),
+  );
+}
+
+async function fetchNasdaqTraderUniverseTickers(key: NasdaqTraderUniverseKey): Promise<LiquidityUniverse> {
+  if (key === 'nasdaq') {
+    return {
+      key,
+      label: 'NASDAQ listed common stocks',
+      source: 'nasdaq-trader-symbol-directory',
+      sourceUrl: NASDAQ_LISTED_URL,
+      tickers: await fetchNasdaqListedTickers(),
+    };
+  }
+
+  if (key === 'nyse') {
+    return {
+      key,
+      label: 'NYSE listed common stocks',
+      source: 'nasdaq-trader-symbol-directory',
+      sourceUrl: OTHER_LISTED_URL,
+      tickers: await fetchOtherListedTickers('N'),
+    };
+  }
+
+  const [nasdaqTickers, nyseTickers] = await Promise.all([
+    fetchNasdaqListedTickers(),
+    fetchOtherListedTickers('N'),
+  ]);
+
+  return {
+    key,
+    label: 'NASDAQ + NYSE listed common stocks',
+    source: 'nasdaq-trader-symbol-directory',
+    sourceUrl: `${NASDAQ_LISTED_URL}, ${OTHER_LISTED_URL}`,
+    tickers: uniqueTickers([...nasdaqTickers, ...nyseTickers]),
+  };
+}
+
 export function extractTickersFromInput(input: string) {
   return uniqueTickers(
     input
@@ -127,6 +209,13 @@ export function extractTickersFromInput(input: string) {
 }
 
 export function resolveLiquidityUniverseKey(input: string): LiquidityUniverseKey {
+  const mentionsNyse = /(nyse|new\s+york\s+stock\s+exchange|纽交所|紐交所|纽约证券交易所|紐約證券交易所)/i.test(input);
+  const mentionsNasdaq = /(nasdaq|纳斯达克|納斯達克)/i.test(input);
+
+  if (mentionsNyse && mentionsNasdaq) {
+    return 'us-listed';
+  }
+
   if (/(s\s*&\s*p\s*500|sp\s*500|sp500|标普\s*500|標普\s*500|spy)/i.test(input)) {
     return 'sp500';
   }
@@ -135,10 +224,26 @@ export function resolveLiquidityUniverseKey(input: string): LiquidityUniverseKey
     return 'nasdaq100';
   }
 
+  if (/(all\s+us|us\s+listed|u\.s\.\s+listed|美国全市场|美股全市场)/i.test(input)) {
+    return 'us-listed';
+  }
+
+  if (mentionsNyse) {
+    return 'nyse';
+  }
+
+  if (mentionsNasdaq) {
+    return 'nasdaq';
+  }
+
   return 'default';
 }
 
 export async function fetchUniverseTickersFromYahooFinance(key: LiquidityUniverseKey): Promise<LiquidityUniverse> {
+  if (key === 'nasdaq' || key === 'nyse' || key === 'us-listed') {
+    return fetchNasdaqTraderUniverseTickers(key);
+  }
+
   try {
     return await fetchWikipediaConstituentTickers(key);
   } catch (error) {
@@ -183,6 +288,11 @@ export async function fetchUniverseTickersFromYahooFinance(key: LiquidityUnivers
 }
 
 export async function resolveLiquidityUniverseFromInput(input: string): Promise<LiquidityUniverse> {
+  const universeKey = resolveLiquidityUniverseKey(input);
+  if (universeKey !== 'default') {
+    return fetchUniverseTickersFromYahooFinance(universeKey);
+  }
+
   const explicitTickers = extractTickersFromInput(input);
 
   if (explicitTickers.length > 0 && input.includes(',')) {
@@ -194,7 +304,7 @@ export async function resolveLiquidityUniverseFromInput(input: string): Promise<
     };
   }
 
-  return fetchUniverseTickersFromYahooFinance(resolveLiquidityUniverseKey(input));
+  return fetchUniverseTickersFromYahooFinance(universeKey);
 }
 
 export async function getStockMetrics(ticker: string): Promise<LiquidityResult> {
