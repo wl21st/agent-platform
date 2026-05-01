@@ -17,6 +17,7 @@ export type FinalCandidateInput = {
 export type TradePlan = {
   ticker: string;
   setupType: "trend" | "pullback" | "momentum";
+  score: number;
   entryZone: { low: number; high: number };
   stopLoss: number;
   target1: number;
@@ -31,7 +32,7 @@ import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/
  * Generate trade plans for final candidate stocks
  */
 function generateTradePlan(candidate: FinalCandidateInput): TradePlan {
-  const { ticker, setupType, metrics } = candidate;
+  const { ticker, setupType, score, metrics } = candidate;
   const { close, sma20, sma50, sma200, atr14, high60d, open, prevClose } = metrics;
 
   let entryZone: { low: number; high: number };
@@ -79,6 +80,7 @@ function generateTradePlan(candidate: FinalCandidateInput): TradePlan {
   return {
     ticker,
     setupType,
+    score,
     entryZone,
     stopLoss,
     target1,
@@ -140,9 +142,9 @@ export async function runFinalSelectAgent(context: ToolExecutionContext): Promis
     const summary = `Generated trade plans for ${tradePlans.length} stocks, showing top ${topPlans.length}.`;
 
     // Build markdown table
-    const tableHeader = '| Ticker | Setup | Entry Low | Entry High | Stop Loss | Target 1 | Target 2 | Summary |\n|--------|-------|-----------|------------|-----------|----------|----------|---------|';
+    const tableHeader = '| Ticker | Setup | Score | Entry Low | Entry High | Stop Loss | Target 1 | Target 2 | Summary |\n|--------|-------|-------|-----------|------------|-----------|----------|----------|---------|';
     const tableRows = topPlans.map(plan => 
-      `| ${plan.ticker} | ${plan.setupType} | ${plan.entryZone.low.toFixed(2)} | ${plan.entryZone.high.toFixed(2)} | ${plan.stopLoss.toFixed(2)} | ${plan.target1.toFixed(2)} | ${plan.target2.toFixed(2)} | ${plan.summary} |`
+      `| ${plan.ticker} | ${plan.setupType} | ${plan.score.toFixed(2)} | ${plan.entryZone.low.toFixed(2)} | ${plan.entryZone.high.toFixed(2)} | ${plan.stopLoss.toFixed(2)} | ${plan.target1.toFixed(2)} | ${plan.target2.toFixed(2)} | ${plan.summary} |`
     ).join('\n');
 
     const markdown = [

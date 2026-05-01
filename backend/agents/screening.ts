@@ -10,6 +10,30 @@ export type ScreenHit = {
   metrics: Record<string, number>;
 };
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function average(values: number[]) {
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function calculateAtr14(bars: Array<{ high?: number | null; low?: number | null; close?: number | null }>, closes: number[]) {
+  const trueRanges = bars.slice(-14).map((bar, index) => {
+    const absoluteIndex = bars.length - 14 + index;
+    const high = bar.high || 0;
+    const low = bar.low || 0;
+    const previousClose = closes[absoluteIndex - 1] || bar.close || 0;
+    return Math.max(
+      high - low,
+      Math.abs(high - previousClose),
+      Math.abs(low - previousClose),
+    );
+  });
+
+  return average(trueRanges);
+}
+
 /**
  * Screen stocks for uptrend: close > sma20 > sma50 > sma200, volume > 1.5 * volAvg20, close <= 1.15 * sma50, >= 200 bars
  */
@@ -33,18 +57,31 @@ export async function screenTrend(tickers: string[]): Promise<ScreenHit[]> {
 
       // Calculate SMAs
       const closes = bars.map(b => b.close || 0);
+      const highs = bars.map(b => b.high || 0);
       const volumes = bars.map(b => b.volume || 0);
-      const sma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-      const sma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
-      const sma200 = closes.slice(-200).reduce((a, b) => a + b, 0) / 200;
-      const volAvg20 = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+      const sma20 = average(closes.slice(-20));
+      const sma50 = average(closes.slice(-50));
+      const sma200 = average(closes.slice(-200));
+      const volAvg20 = average(volumes.slice(-20));
       const currentPrice = closes[closes.length - 1];
       const currentVolume = volumes[volumes.length - 1];
+      const close20dAgo = closes[closes.length - 21] || 0;
+      const return20d = close20dAgo > 0 ? (currentPrice - close20dAgo) / close20dAgo : 0;
+      const atr14 = calculateAtr14(bars, closes);
+      const volRatio = volAvg20 > 0 ? currentVolume / volAvg20 : 0;
 
       const passed = currentPrice > sma20 && sma20 > sma50 && sma50 > sma200 && currentVolume > 1.5 * volAvg20 && currentPrice <= 1.15 * sma50;
       if (!passed) continue;
 
-      const score = 1; // Simple score for passed hits
+      const base =
+        40 * ((sma20 - sma50) / sma50) +
+        30 * ((sma50 - sma200) / sma200) +
+        15 * Math.min(volRatio, 4) +
+        15 * Math.max(0, 1 - ((currentPrice - sma20) / (2 * atr14)));
+      const penalty =
+        25 * Math.max(0, (currentPrice / sma50) - 1.08) +
+        20 * Math.max(0, return20d - 0.25);
+      const score = Math.max(0, base - penalty);
 
       results.push({
         ticker,
@@ -58,6 +95,11 @@ export async function screenTrend(tickers: string[]): Promise<ScreenHit[]> {
           sma200,
           volume: currentVolume,
           volAvg20,
+          volRatio,
+          atr14,
+          return20d,
+          scoreBase: base,
+          scorePenalty: penalty,
         },
       });
     } catch (error) {
@@ -91,19 +133,34 @@ export async function screenPullback(tickers: string[]): Promise<ScreenHit[]> {
 
       const closes = bars.map(b => b.close || 0);
       const volumes = bars.map(b => b.volume || 0);
-      const sma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-      const sma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
-      const sma200 = closes.slice(-200).reduce((a, b) => a + b, 0) / 200;
-      const volAvg20 = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+      const sma20 = average(closes.slice(-20));
+      const sma50 = average(closes.slice(-50));
+      const sma200 = average(closes.slice(-200));
+      const volAvg20 = average(volumes.slice(-20));
       const currentPrice = closes[closes.length - 1];
       const currentVolume = volumes[volumes.length - 1];
       const highs = bars.map(b => b.high || 0);
       const high60d = Math.max(...highs.slice(-61, -1));
+      const atr14 = calculateAtr14(bars, closes);
+      const volRatio = volAvg20 > 0 ? currentVolume / volAvg20 : 0;
 
       const passed = currentPrice > sma200 && sma50 > sma200 && currentPrice < sma20 && currentPrice > sma50 * 0.97 && currentVolume < 1.5 * volAvg20;
       if (!passed) continue;
 
-      const score = 1; // Simple score for passed hits
+      const depthDenominator = sma20 - sma50;
+      const depth = depthDenominator > 0
+        ? clamp((sma20 - currentPrice) / depthDenominator, 0, 1)
+        : 0;
+      const trendStrength = (sma50 - sma200) / sma200;
+      const base =
+        45 * depth +
+        30 * trendStrength +
+        15 * Math.max(0, 1.5 - volRatio) +
+        10 * Math.max(0, 1 - (Math.abs(currentPrice - sma50) / (1.5 * atr14)));
+      const penalty =
+        20 * Math.max(0, ((sma20 - currentPrice) / currentPrice) - 0.06) +
+        20 * Math.max(0, 0.99 - (currentPrice / sma50));
+      const score = Math.max(0, base - penalty);
 
       results.push({
         ticker,
@@ -118,6 +175,12 @@ export async function screenPullback(tickers: string[]): Promise<ScreenHit[]> {
           high60d,
           volume: currentVolume,
           volAvg20,
+          volRatio,
+          atr14,
+          depth,
+          trendStrength,
+          scoreBase: base,
+          scorePenalty: penalty,
         },
       });
     } catch (error) {
@@ -160,26 +223,31 @@ export async function screenMomentum(tickers: string[]): Promise<ScreenHit[]> {
       const currentVolume = volumes[volumes.length - 1];
       const previousClose = closes[closes.length - 2] || 0;
 
-      const sma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
-      const volAvg20 = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+      const sma20 = average(closes.slice(-20));
+      const sma50 = average(closes.slice(-50));
+      const volAvg20 = average(volumes.slice(-20));
       const close5dAgo = closes[closes.length - 6] || 0;
       const return5d = (currentClose - close5dAgo) / close5dAgo;
-      const gapPct = ((currentOpen - previousClose) / previousClose) * 100;
-      const trueRanges = bars.slice(-14).map((bar, index) => {
-        const absoluteIndex = bars.length - 14 + index;
-        const previousBarClose = closes[absoluteIndex - 1] || bar.close || 0;
-        return Math.max(
-          highs[absoluteIndex] - lows[absoluteIndex],
-          Math.abs(highs[absoluteIndex] - previousBarClose),
-          Math.abs(lows[absoluteIndex] - previousBarClose),
-        );
-      });
-      const atr14 = trueRanges.reduce((sum, trueRange) => sum + trueRange, 0) / trueRanges.length;
+      const gap = previousClose > 0 ? (currentOpen - previousClose) / previousClose : 0;
+      const gapPct = gap * 100;
+      const volRatio = volAvg20 > 0 ? currentVolume / volAvg20 : 0;
+      const atr14 = calculateAtr14(bars, closes);
+      const holdStrength = atr14 > 0 ? (currentClose - currentOpen) / atr14 : 0;
+      const high20d = Math.max(...highs.slice(-21, -1));
 
       const passed = gapPct > 5 && currentClose > currentOpen && currentVolume > 2 * volAvg20 && currentClose > sma50 && return5d <= 0.3;
       if (!passed) continue;
 
-      const score = 1; // Simple score for passed hits
+      const base =
+        35 * gap +
+        25 * Math.min(volRatio, 6) +
+        20 * Math.max(0, holdStrength) +
+        20 * Math.max(0, (currentClose - sma50) / sma50);
+      const penalty =
+        30 * Math.max(0, return5d - 0.18) +
+        20 * Math.max(0, (currentClose / sma20) - 1.08) +
+        20 * Math.max(0, (currentClose - high20d * 0.98) / currentClose);
+      const score = Math.max(0, base - penalty);
 
       results.push({
         ticker,
@@ -192,9 +260,15 @@ export async function screenMomentum(tickers: string[]): Promise<ScreenHit[]> {
           gapPct,
           volume: currentVolume,
           volAvg20,
+          volRatio,
+          sma20,
           sma50,
           atr14,
+          holdStrength,
+          high20d,
           return5d,
+          scoreBase: base,
+          scorePenalty: penalty,
         },
       });
     } catch (error) {
