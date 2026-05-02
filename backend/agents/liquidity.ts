@@ -31,7 +31,7 @@ const MIN_HISTORY_BARS = 20;
 const STOCK_METRICS_CACHE_TTL_MS = 60 * 60 * 1000;
 const STOCK_METRICS_BATCH_SIZE = 50;
 const STOCK_METRICS_CONCURRENCY = 3;
-const STOCK_METRICS_MAX_TICKERS = 50_000;
+const STOCK_METRICS_DEFAULT_MAX_TICKERS = 500;
 const STOCK_METRICS_REQUESTS_PER_SECOND = 2;
 const STOCK_METRICS_REQUEST_INTERVAL_MS = 1000 / STOCK_METRICS_REQUESTS_PER_SECOND;
 const STOCK_METRICS_MAX_RETRIES = 3;
@@ -55,6 +55,12 @@ type StockMetricsFetchStats = {
   cacheTtlMs: number;
   requestsPerSecond: number;
   maxRetries: number;
+};
+
+export type StockMetricsScanOptions = {
+  maxTickers?: number;
+  logProgress?: boolean;
+  logLabel?: string;
 };
 
 export type LiquidityUniverseKey = 'sp500' | 'nasdaq100' | 'nasdaq' | 'nyse' | 'us-listed' | 'default';
@@ -515,20 +521,38 @@ export function getStockMetricsCacheStats() {
   };
 }
 
+function logStockMetricsProgress(enabled: boolean, message: string) {
+  if (enabled) {
+    console.info(`[liquidity] ${message}`);
+  }
+}
+
 /**
  * Extracts liquidity metrics for every ticker in the stock pool.
  * Results include both passed and failed tickers so the caller can inspect the full pool.
  */
-export async function getStocksLiquidityMetrics(tickers: string[]): Promise<LiquidityResults> {
+export async function getStocksLiquidityMetrics(tickers: string[], options: StockMetricsScanOptions = {}): Promise<LiquidityResults> {
   const uniqueRequestedTickers = uniqueTickers(tickers);
-  const selectedTickers = uniqueRequestedTickers.slice(0, STOCK_METRICS_MAX_TICKERS);
+  const maxTickers = options.maxTickers ?? STOCK_METRICS_DEFAULT_MAX_TICKERS;
+  const selectedTickers = uniqueRequestedTickers.slice(0, maxTickers);
   const batches = chunkArray(selectedTickers, STOCK_METRICS_BATCH_SIZE);
   const results: LiquidityResult[] = [];
   let cacheHits = 0;
   let cacheMisses = 0;
   let errors = 0;
+  const logPrefix = options.logLabel ? `${options.logLabel}: ` : '';
 
-  for (const batch of batches) {
+  logStockMetricsProgress(
+    Boolean(options.logProgress),
+    `${logPrefix}starting liquidity metrics for ${selectedTickers.length}/${uniqueRequestedTickers.length} tickers (${batches.length} batches, ${STOCK_METRICS_CONCURRENCY} concurrency, ${STOCK_METRICS_REQUESTS_PER_SECOND} req/sec)`,
+  );
+
+  for (const [batchIndex, batch] of batches.entries()) {
+    logStockMetricsProgress(
+      Boolean(options.logProgress),
+      `${logPrefix}batch ${batchIndex + 1}/${batches.length} started (${batch.length} tickers)`,
+    );
+
     const batchResults = await runWithConcurrency(batch, STOCK_METRICS_CONCURRENCY, async (ticker) => {
       const cached = stockMetricsCache.get(ticker);
 
@@ -553,6 +577,11 @@ export async function getStocksLiquidityMetrics(tickers: string[]): Promise<Liqu
     });
 
     results.push(...batchResults);
+
+    logStockMetricsProgress(
+      Boolean(options.logProgress),
+      `${logPrefix}batch ${batchIndex + 1}/${batches.length} completed; processed ${results.length}/${selectedTickers.length}, cache hits ${cacheHits}, misses ${cacheMisses}, errors ${errors}`,
+    );
   }
 
   const stats: StockMetricsFetchStats = {
@@ -569,6 +598,11 @@ export async function getStocksLiquidityMetrics(tickers: string[]): Promise<Liqu
     requestsPerSecond: STOCK_METRICS_REQUESTS_PER_SECOND,
     maxRetries: STOCK_METRICS_MAX_RETRIES,
   };
+
+  logStockMetricsProgress(
+    Boolean(options.logProgress),
+    `${logPrefix}completed liquidity metrics; passed ${results.filter((result) => result.status === 'passed').length}/${results.length}, skipped ${stats.skippedCount}`,
+  );
 
   Object.defineProperty(results, 'fetchStats', {
     value: stats,

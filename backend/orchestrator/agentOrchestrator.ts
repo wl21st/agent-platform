@@ -612,6 +612,8 @@ async function* streamUsStockScanWorkflow(params: {
 
   yield { type: 'tasks', tasks };
 
+  console.info(`[stock-scan] Starting workflow for input: ${input}`);
+
   const liquidityResult = await runLiquidityAgent({
     input,
     preferences,
@@ -636,6 +638,8 @@ async function* streamUsStockScanWorkflow(params: {
   const totalUniverseTickers = Array.isArray(liquidityUniverse?.tickers)
     ? liquidityUniverse.tickers.length
     : liquidTickers.length;
+
+  console.info(`[stock-scan] Liquidity filter completed: ${liquidTickers.length}/${totalUniverseTickers} liquid tickers from ${universeLabel}`);
 
   tasks = markTask(tasks, 'liquidity-filter-tool', liquidTickers.length > 0 ? 'completed' : 'failed');
   yield { type: 'tasks', tasks };
@@ -692,6 +696,8 @@ async function* streamUsStockScanWorkflow(params: {
     ? screenResult.metadata.results
     : [];
 
+  console.info(`[stock-scan] Screen Hit Agent completed: ${screenHits.length} hits from ${liquidTickers.length} liquid tickers`);
+
   tasks = markTask(tasks, 'screen-hit-tool', screenHits.length > 0 ? 'completed' : 'failed');
   yield { type: 'tasks', tasks };
 
@@ -740,6 +746,8 @@ async function* streamUsStockScanWorkflow(params: {
     input: JSON.stringify(screenHits),
     preferences,
   });
+
+  console.info('[stock-scan] Final Select Agent completed');
 
   tasks = markTask(tasks, 'final-select-tool', 'completed');
   yield { type: 'tasks', tasks };
