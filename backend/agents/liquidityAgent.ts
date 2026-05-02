@@ -9,21 +9,17 @@ export async function runLiquidityAgent(context: ToolExecutionContext): Promise<
     const universe = await resolveLiquidityUniverseFromInput(input);
     const allResults = await getStocksLiquidityMetrics(universe.tickers);
     const passedResults = allResults.filter((result) => result.status === 'passed');
+    const fetchStats = allResults.fetchStats;
     const summary = `Found ${passedResults.length} liquid stocks out of ${allResults.length} screened.`;
+    const cacheSummary = fetchStats
+      ? `Used ${fetchStats.batches} batches with ${fetchStats.concurrency} concurrent requests at ${fetchStats.requestsPerSecond} req/sec; cache hits ${fetchStats.cacheHits}, misses ${fetchStats.cacheMisses}.`
+      : '';
 
     const markdown = [
       '# 💧 Liquidity Filter Agent',
       '',
-      `**Universe:** ${universe.label}`,
-      `**Source:** ${universe.sourceSymbol ? `${universe.source} (${universe.sourceSymbol})` : universe.source}`,
-      `**Stocks Loaded:** ${universe.tickers.length}`,
-      `**Summary:** ${summary}`,
-      '',
-      '## Liquid Stocks',
-      '',
-      '```json',
-      JSON.stringify(passedResults, null, 2),
-      '```',
+      `Scanned ${allResults.length} stocks from ${universe.label} and found ${passedResults.length} stocks passing the liquidity filter.`,
+      cacheSummary,
     ].join('\n');
 
     return {
@@ -33,6 +29,7 @@ export async function runLiquidityAgent(context: ToolExecutionContext): Promise<
       metadata: {
         tickers: universe.tickers,
         universe,
+        fetchStats,
         results: passedResults,
         liquidCount: passedResults.length,
         screenedCount: allResults.length,

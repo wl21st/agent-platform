@@ -33,7 +33,7 @@ import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/
  */
 function generateTradePlan(candidate: FinalCandidateInput): TradePlan {
   const { ticker, setupType, score, metrics } = candidate;
-  const { close, sma20, sma50, sma200, atr14, high60d, open, prevClose } = metrics;
+  const { close, sma20, sma50, atr14, high60d, open, prevClose } = metrics;
 
   let entryZone: { low: number; high: number };
   let stopLoss: number;
@@ -131,12 +131,8 @@ export async function runFinalSelectAgent(context: ToolExecutionContext): Promis
     const tradePlans = candidates.map(generateTradePlan);
 
     // Sort by score descending and take top 10
-    const topPlans = tradePlans
-      .sort((a, b) => {
-        const scoreA = candidates.find(c => c.ticker === a.ticker && c.setupType === a.setupType)?.score ?? 0;
-        const scoreB = candidates.find(c => c.ticker === b.ticker && c.setupType === b.setupType)?.score ?? 0;
-        return scoreB - scoreA;
-      })
+    const topPlans = [...tradePlans]
+      .sort((a, b) => b.score - a.score)
       .slice(0, 10);
 
     const summary = `Generated trade plans for ${tradePlans.length} stocks, showing top ${topPlans.length}.`;
@@ -150,11 +146,7 @@ export async function runFinalSelectAgent(context: ToolExecutionContext): Promis
     const markdown = [
       '# 🎯 Final Select Agent',
       '',
-      `**Total Candidates:** ${candidates.length}`,
-      `**Plans Generated:** ${tradePlans.length}`,
-      `**Top 10 Displayed:** ${topPlans.length}`,
-      '',
-      '## Trade Plans',
+      `**Results:** Top ${topPlans.length} of ${candidates.length} candidates`,
       '',
       tableHeader,
       tableRows,
@@ -168,7 +160,7 @@ export async function runFinalSelectAgent(context: ToolExecutionContext): Promis
         candidatesCount: candidates.length,
         plansCount: tradePlans.length,
         topPlansCount: topPlans.length,
-        tradePlans,
+        topTickers: topPlans.map((plan) => plan.ticker),
       },
     };
   } catch (error) {

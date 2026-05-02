@@ -163,7 +163,7 @@ export const TOOL_REGISTRY: Record<ToolRoute, ToolDefinition> = {
     route: 'final-select',
     taskId: 'final-select-tool',
     taskDescription: 'Generate trade plans for final candidate stocks using Final Select Agent',
-    keywords: /(scan.*stock|stock.*scan|scan.*us|us.*scan|market.*scan|scan.*today|今日.*扫描|扫描.*美股|美股.*扫描|final|select|trade.*plan|plan|entry|stop|target|investment.*plan|\$[A-Za-z]{1,6}\b.*plan|ticker.*plan)/i,
+    keywords: /(scan.*stock|stock.*scan|scan.*us|us.*scan|market.*scan|scan.*today|今日.*扫描|扫描.*美股|美股.*扫描|挑选.*(?:股票|美股|纳斯达克|納斯達克|标普|標普)|(?:股票|美股|纳斯达克|納斯達克|标普|標普).*前\s*\d+|final|select|trade.*plan|plan|entry|stop|target|investment.*plan|\$[A-Za-z]{1,6}\b.*plan|ticker.*plan)/i,
     agentName: FINAL_SELECT_AGENT.name,
     execute: runFinalSelectAgent,
     buildPreferenceUpdates: () => ({
@@ -259,7 +259,7 @@ export function resolveToolRouteWithContext(context: {
     return 'none';
   }
 
-  if (/(scan.*stock|stock.*scan|scan.*us|us.*scan|market.*scan|scan.*today|scan.*s\s*&\s*p\s*500|scan.*sp\s*500|scan.*nasdaq\s*100|今日.*扫描|扫描.*美股|美股.*扫描|扫描.*标普\s*500|扫描.*標普\s*500|扫描.*纳斯达克\s*100|扫描.*納斯達克\s*100|扫描.*纳指\s*100|扫描.*納指\s*100)/i.test(context.input)) {
+  if (/(scan.*stock|stock.*scan|scan.*us|us.*scan|market.*scan|scan.*today|scan.*s\s*&\s*p\s*500|scan.*sp\s*500|scan.*nasdaq(?:\s*100)?|今日.*扫描|扫描.*美股|美股.*扫描|扫描.*标普\s*500|扫描.*標普\s*500|扫描.*纳斯达克(?:\s*100)?|扫描.*納斯達克(?:\s*100)?|扫描.*纳指\s*100|扫描.*納指\s*100|挑选.*(?:股票|美股|纳斯达克|納斯達克|标普|標普)|(?:股票|美股|纳斯达克|納斯達克|标普|標普).*前\s*\d+)/i.test(context.input)) {
     return 'final-select';
   }
 

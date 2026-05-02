@@ -96,15 +96,10 @@ export async function runScreenHitAgent(context: ToolExecutionContext): Promise<
     const markdown = [
       '# 🎯 Screen Hit Agent',
       '',
-      `**Setup Type:** ${setupType}`,
-      `**Stocks Screened:** ${tickers.length}`,
-      `**Hits Found:** ${results.length}`,
-      '',
-      results.length > 0 ? '## Screening Results' : '## No Stocks Passed Screening',
-      '',
-      results.length > 0 ? '```json' : '',
-      results.length > 0 ? JSON.stringify(results, null, 2) : 'No stocks met the strict screening criteria.',
-      results.length > 0 ? '```' : '',
+      `User asked to screen ${tickers.length} stocks for ${setupType} setups.`,
+      results.length > 0
+        ? `${results.length} stocks matched the screening criteria; detailed ticker JSON is omitted to reduce token usage.`
+        : 'No stocks matched the screening criteria.',
     ].join('\n');
 
     return {

@@ -1418,7 +1418,7 @@ export async function* streamOrchestratorSession(params: {
     return;
   }
 
-  if (intent.tool === 'final-select' && /(scan|扫描|美股|market|s\s*&\s*p\s*500|sp\s*500|标普\s*500|標普\s*500|nasdaq\s*100|纳斯达克\s*100|納斯達克\s*100|纳指\s*100|納指\s*100)/i.test(params.input)) {
+  if (intent.tool === 'final-select' && /(scan|select|扫描|挑选|前\s*\d+|美股|股票|market|s\s*&\s*p\s*500|sp\s*500|标普\s*500|標普\s*500|nasdaq(?:\s*100)?|纳斯达克(?:\s*100)?|納斯達克(?:\s*100)?|纳指\s*100|納指\s*100)/i.test(params.input)) {
     yield* streamUsStockScanWorkflow({
       sessionId,
       input: params.input,
