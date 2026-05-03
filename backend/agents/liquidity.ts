@@ -30,12 +30,14 @@ const MIN_AVG_VOLUME_20 = 2_000_000;
 const MIN_HISTORY_BARS = 20;
 const STOCK_METRICS_CACHE_TTL_MS = 60 * 60 * 1000;
 const STOCK_METRICS_BATCH_SIZE = 50;
-const STOCK_METRICS_CONCURRENCY = 3;
+const STOCK_METRICS_CONCURRENCY = 6;
 const STOCK_METRICS_DEFAULT_MAX_TICKERS = 500;
-const STOCK_METRICS_REQUESTS_PER_SECOND = 2;
+const STOCK_METRICS_REQUESTS_PER_SECOND = 8;
 const STOCK_METRICS_REQUEST_INTERVAL_MS = 1000 / STOCK_METRICS_REQUESTS_PER_SECOND;
+const STOCK_METRICS_JITTER_MS = 250;
 const STOCK_METRICS_MAX_RETRIES = 3;
 const STOCK_METRICS_RETRY_BASE_DELAY_MS = 5_000;
+const STOCK_METRICS_RATE_LIMIT_COOLDOWN_MS = 45_000;
 
 type StockMetricsCacheEntry = {
   result: LiquidityResult;
@@ -54,7 +56,9 @@ type StockMetricsFetchStats = {
   concurrency: number;
   cacheTtlMs: number;
   requestsPerSecond: number;
+  jitterMs: number;
   maxRetries: number;
+  rateLimitCooldownMs: number;
 };
 
 export type StockMetricsScanOptions = {
@@ -138,13 +142,21 @@ function delay(ms: number) {
 
 async function waitForStockMetricsRateLimit() {
   const now = Date.now();
+  const jitterMs = Math.floor(Math.random() * STOCK_METRICS_JITTER_MS);
   const scheduledAt = Math.max(now, nextStockMetricsRequestAt);
-  nextStockMetricsRequestAt = scheduledAt + STOCK_METRICS_REQUEST_INTERVAL_MS;
+  nextStockMetricsRequestAt = scheduledAt + STOCK_METRICS_REQUEST_INTERVAL_MS + jitterMs;
 
   const waitMs = scheduledAt - now;
   if (waitMs > 0) {
     await delay(waitMs);
   }
+}
+
+function applyStockMetricsCooldown() {
+  nextStockMetricsRequestAt = Math.max(
+    nextStockMetricsRequestAt,
+    Date.now() + STOCK_METRICS_RATE_LIMIT_COOLDOWN_MS,
+  );
 }
 
 async function runWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T, index: number) => Promise<R>) {
@@ -440,7 +452,9 @@ async function fetchStockMetrics(ticker: string): Promise<LiquidityResult> {
         throw error;
       }
 
+      applyStockMetricsCooldown();
       const backoffMs = STOCK_METRICS_RETRY_BASE_DELAY_MS * (2 ** attempt);
+      console.warn(`[liquidity] Rate limit for ${ticker}; cooling down ${Math.round(STOCK_METRICS_RATE_LIMIT_COOLDOWN_MS / 1000)}s, retrying in ${Math.round(backoffMs / 1000)}s`);
       await delay(backoffMs);
     }
   }
@@ -543,8 +557,8 @@ export async function getStocksLiquidityMetrics(tickers: string[], options: Stoc
   const logPrefix = options.logLabel ? `${options.logLabel}: ` : '';
 
   logStockMetricsProgress(
-    Boolean(options.logProgress),
-    `${logPrefix}starting liquidity metrics for ${selectedTickers.length}/${uniqueRequestedTickers.length} tickers (${batches.length} batches, ${STOCK_METRICS_CONCURRENCY} concurrency, ${STOCK_METRICS_REQUESTS_PER_SECOND} req/sec)`,
+      Boolean(options.logProgress),
+    `${logPrefix}starting liquidity metrics for ${selectedTickers.length}/${uniqueRequestedTickers.length} tickers (${batches.length} batches, ${STOCK_METRICS_CONCURRENCY} concurrency, ${STOCK_METRICS_REQUESTS_PER_SECOND} req/sec, ${STOCK_METRICS_JITTER_MS}ms jitter)`,
   );
 
   for (const [batchIndex, batch] of batches.entries()) {
@@ -596,7 +610,9 @@ export async function getStocksLiquidityMetrics(tickers: string[], options: Stoc
     concurrency: STOCK_METRICS_CONCURRENCY,
     cacheTtlMs: STOCK_METRICS_CACHE_TTL_MS,
     requestsPerSecond: STOCK_METRICS_REQUESTS_PER_SECOND,
+    jitterMs: STOCK_METRICS_JITTER_MS,
     maxRetries: STOCK_METRICS_MAX_RETRIES,
+    rateLimitCooldownMs: STOCK_METRICS_RATE_LIMIT_COOLDOWN_MS,
   };
 
   logStockMetricsProgress(

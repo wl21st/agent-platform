@@ -18,7 +18,7 @@ export async function runLiquidityAgent(context: ToolExecutionContext): Promise<
     const fetchStats = allResults.fetchStats;
     const summary = `Found ${passedResults.length} liquid stocks out of ${allResults.length} screened.`;
     const cacheSummary = fetchStats
-      ? `Used ${fetchStats.batches} batches with ${fetchStats.concurrency} concurrent requests at ${fetchStats.requestsPerSecond} req/sec; cache hits ${fetchStats.cacheHits}, misses ${fetchStats.cacheMisses}.`
+      ? `Used ${fetchStats.batches} batches with ${fetchStats.concurrency} concurrent requests at ${fetchStats.requestsPerSecond} req/sec plus ${fetchStats.jitterMs}ms jitter; cache hits ${fetchStats.cacheHits}, misses ${fetchStats.cacheMisses}.`
       : '';
 
     const markdown = [

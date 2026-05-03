@@ -1,6 +1,6 @@
 import { SCREEN_HIT_AGENT } from '@/lib/agent-chat';
 import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/toolAgents';
-import { screenTrend, screenPullback, screenMomentum, type ScreenHit } from './screening';
+import { screenTrend, screenPullback, screenMomentum, screenSetups, type ScreenHit } from './screening';
 
 export async function runScreenHitAgent(context: ToolExecutionContext): Promise<ToolExecutionResult> {
   const { input } = context;
@@ -72,12 +72,7 @@ export async function runScreenHitAgent(context: ToolExecutionContext): Promise<
     let results: ScreenHit[] = [];
     switch (setupType) {
       case 'all': {
-        const [trendHits, pullbackHits, momentumHits] = await Promise.all([
-          screenTrend(tickers),
-          screenPullback(tickers),
-          screenMomentum(tickers),
-        ]);
-        results = [...trendHits, ...pullbackHits, ...momentumHits];
+        results = await screenSetups(tickers, ['trend', 'pullback', 'momentum']);
         break;
       }
       case 'trend':
