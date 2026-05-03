@@ -1,6 +1,7 @@
 import YahooFinance from 'yahoo-finance2';
 
 const yahooFinance = new YahooFinance();
+const SCREENING_PROGRESS_BATCH_SIZE = 50;
 
 export type SetupType = 'trend' | 'pullback' | 'momentum';
 
@@ -40,6 +41,10 @@ function average(values: number[]): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function formatDuration(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 function calculateAtr14(bars: ChartBar[], closes: number[]): number {
@@ -275,13 +280,29 @@ function evaluateSetups(ticker: string, bars: ChartBar[], setupTypes: SetupType[
 
 export async function screenSetups(tickers: string[], setupTypes: SetupType[]): Promise<ScreenHit[]> {
   const results: ScreenHit[] = [];
+  const startedAt = Date.now();
+  let batchStartedAt = startedAt;
 
-  for (const ticker of tickers) {
+  console.info(`[screening] Started ${setupTypes.join('/')} screening for ${tickers.length} tickers`);
+
+  for (const [index, ticker] of tickers.entries()) {
     try {
       const bars = await fetchScreeningBars(ticker);
       results.push(...evaluateSetups(ticker, bars, setupTypes));
     } catch (error) {
       console.error(`[screening] Error processing ${ticker}:`, error);
+    }
+
+    const processed = index + 1;
+    if (processed % SCREENING_PROGRESS_BATCH_SIZE === 0 || processed === tickers.length) {
+      const now = Date.now();
+      const batchSize = processed % SCREENING_PROGRESS_BATCH_SIZE || SCREENING_PROGRESS_BATCH_SIZE;
+      const batchMs = now - batchStartedAt;
+      const totalMs = now - startedAt;
+      console.info(
+        `[screening] Processed ${processed}/${tickers.length} tickers; last ${batchSize}: ${formatDuration(batchMs)}; total: ${formatDuration(totalMs)}; hits: ${results.length}`,
+      );
+      batchStartedAt = now;
     }
   }
 
