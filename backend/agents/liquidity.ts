@@ -2,22 +2,21 @@ import YahooFinance from 'yahoo-finance2';
 
 const yahooFinance = new YahooFinance();
 
-type ChartQuote = {
-  close?: number | null;
-  volume?: number | null;
-};
-
-type ChartResultArray = {
-  quotes?: ChartQuote[];
-};
-
+/**
+ * Liquidity result returned for every ticker in the requested universe.
+ *
+ * `avgVolume3Month` is Yahoo's `averageDailyVolume3Month` — a rolling 3-month
+ * average daily volume reported on the quote endpoint. It replaced the
+ * previous 20-day SMA volume so the whole liquidity filter can run in a few
+ * batched HTTP requests instead of one chart fetch per ticker.
+ */
 export interface LiquidityResult {
   ticker: string;
   status: 'passed' | 'failed';
   reasons: string[];
   metrics: {
     close: number;
-    avgVolume20: number;
+    avgVolume3Month: number;
   };
 }
 
@@ -26,18 +25,22 @@ export type LiquidityResults = LiquidityResult[] & {
 };
 
 const MIN_PRICE = 10;
-const MIN_AVG_VOLUME_20 = 2_000_000;
-const MIN_HISTORY_BARS = 20;
-const STOCK_METRICS_CACHE_TTL_MS = 60 * 60 * 1000;
-const STOCK_METRICS_BATCH_SIZE = 50;
-const STOCK_METRICS_CONCURRENCY = 6;
+const MIN_AVG_VOLUME = 2_000_000;
+// Yahoo accepts ~250 symbols per quote() call in practice; 200 leaves headroom
+// for URL length and avoids partial-batch truncation.
+const STOCK_METRICS_BATCH_SIZE = 200;
+// Default cap for narrow indexes (SP500, Nasdaq 100, user-supplied lists).
+// Broad universes (full NASDAQ / NYSE / us-listed) override this via
+// `getDefaultMaxTickersForUniverse` so a "scan Nasdaq" request actually
+// covers the whole exchange instead of being silently truncated.
 const STOCK_METRICS_DEFAULT_MAX_TICKERS = 500;
-const STOCK_METRICS_REQUESTS_PER_SECOND = 8;
-const STOCK_METRICS_REQUEST_INTERVAL_MS = 1000 / STOCK_METRICS_REQUESTS_PER_SECOND;
-const STOCK_METRICS_JITTER_MS = 250;
-const STOCK_METRICS_MAX_RETRIES = 3;
-const STOCK_METRICS_RETRY_BASE_DELAY_MS = 5_000;
-const STOCK_METRICS_RATE_LIMIT_COOLDOWN_MS = 45_000;
+const STOCK_METRICS_BROAD_UNIVERSE_MAX_TICKERS = 5_000;
+const STOCK_METRICS_CACHE_TTL_MS = 60 * 60 * 1000;
+// Run liquidity batches in parallel; each batch is a single HTTP request,
+// so 3 concurrent batches cover ~600 tickers in roughly one Yahoo RTT.
+const STOCK_METRICS_BATCH_CONCURRENCY = 3;
+const STOCK_METRICS_BATCH_MAX_RETRIES = 2;
+const STOCK_METRICS_BATCH_RETRY_BASE_DELAY_MS = 1_500;
 
 type StockMetricsCacheEntry = {
   result: LiquidityResult;
@@ -55,10 +58,7 @@ type StockMetricsFetchStats = {
   batchSize: number;
   concurrency: number;
   cacheTtlMs: number;
-  requestsPerSecond: number;
-  jitterMs: number;
-  maxRetries: number;
-  rateLimitCooldownMs: number;
+  durationMs: number;
 };
 
 export type StockMetricsScanOptions = {
@@ -111,8 +111,6 @@ const WIKIPEDIA_CONSTITUENT_UNIVERSES: Record<WikipediaUniverseKey, { label: str
 const NASDAQ_LISTED_URL = 'https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt';
 const OTHER_LISTED_URL = 'https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt';
 const stockMetricsCache = new Map<string, StockMetricsCacheEntry>();
-const pendingStockMetrics = new Map<string, Promise<LiquidityResult>>();
-let nextStockMetricsRequestAt = 0;
 
 type YahooTopHolding = {
   symbol?: string;
@@ -138,25 +136,6 @@ function chunkArray<T>(values: T[], size: number) {
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForStockMetricsRateLimit() {
-  const now = Date.now();
-  const jitterMs = Math.floor(Math.random() * STOCK_METRICS_JITTER_MS);
-  const scheduledAt = Math.max(now, nextStockMetricsRequestAt);
-  nextStockMetricsRequestAt = scheduledAt + STOCK_METRICS_REQUEST_INTERVAL_MS + jitterMs;
-
-  const waitMs = scheduledAt - now;
-  if (waitMs > 0) {
-    await delay(waitMs);
-  }
-}
-
-function applyStockMetricsCooldown() {
-  nextStockMetricsRequestAt = Math.max(
-    nextStockMetricsRequestAt,
-    Date.now() + STOCK_METRICS_RATE_LIMIT_COOLDOWN_MS,
-  );
 }
 
 async function runWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T, index: number) => Promise<R>) {
@@ -185,7 +164,42 @@ function createDataFetchErrorResult(ticker: string): LiquidityResult {
     reasons: ['data_fetch_error'],
     metrics: {
       close: 0,
-      avgVolume20: 0,
+      avgVolume3Month: 0,
+    },
+  };
+}
+
+function createMissingDataResult(ticker: string): LiquidityResult {
+  return {
+    ticker,
+    status: 'failed',
+    reasons: ['missing_quote_data'],
+    metrics: {
+      close: 0,
+      avgVolume3Month: 0,
+    },
+  };
+}
+
+function evaluateLiquidityFromQuote(ticker: string, close: number, avgVolume3Month: number): LiquidityResult {
+  const reasons: string[] = [];
+  if (close <= 0 || avgVolume3Month <= 0) {
+    return createMissingDataResult(ticker);
+  }
+  if (close < MIN_PRICE) {
+    reasons.push('price_below_10');
+  }
+  if (avgVolume3Month < MIN_AVG_VOLUME) {
+    reasons.push('avg_volume_below_2m');
+  }
+
+  return {
+    ticker,
+    status: reasons.length === 0 ? 'passed' : 'failed',
+    reasons,
+    metrics: {
+      close,
+      avgVolume3Month,
     },
   };
 }
@@ -362,6 +376,26 @@ export function resolveLiquidityUniverseKey(input: string): LiquidityUniverseKey
   return 'default';
 }
 
+/**
+ * Returns the default ticker cap to use when scanning a given universe.
+ *
+ * Narrow indexes like SP500 / Nasdaq 100 / user-supplied ticker lists keep
+ * the conservative 500 cap. Broad exchange universes (full NASDAQ ~3.5k,
+ * NYSE ~2.8k, combined us-listed ~6k) get a much higher cap so scans like
+ * "scan Nasdaq" actually cover the whole exchange instead of silently
+ * truncating to the first 500 alphabetically.
+ *
+ * The return value is intended to be passed as `maxTickers` to
+ * `getStocksLiquidityMetrics`.
+ */
+export function getDefaultMaxTickersForUniverse(key: LiquidityUniverseKey): number {
+  if (key === 'nasdaq' || key === 'nyse' || key === 'us-listed') {
+    return STOCK_METRICS_BROAD_UNIVERSE_MAX_TICKERS;
+  }
+
+  return STOCK_METRICS_DEFAULT_MAX_TICKERS;
+}
+
 export async function fetchUniverseTickersFromYahooFinance(key: LiquidityUniverseKey): Promise<LiquidityUniverse> {
   if (key === 'nasdaq' || key === 'nyse' || key === 'us-listed') {
     return fetchNasdaqTraderUniverseTickers(key);
@@ -430,73 +464,89 @@ export async function resolveLiquidityUniverseFromInput(input: string): Promise<
   return fetchUniverseTickersFromYahooFinance(universeKey);
 }
 
-async function fetchStockMetrics(ticker: string): Promise<LiquidityResult> {
-  let quotes: ChartQuote[] | undefined;
+type YahooQuoteLike = {
+  symbol?: string;
+  regularMarketPrice?: number;
+  regularMarketPreviousClose?: number;
+  averageDailyVolume3Month?: number;
+  averageDailyVolume10Day?: number;
+};
 
-  for (let attempt = 0; attempt <= STOCK_METRICS_MAX_RETRIES; attempt += 1) {
+/**
+ * Fetch one batch of liquidity metrics in a single Yahoo `quote(...)` call.
+ * Returns a result for every ticker in the batch (passed/failed/error), keyed
+ * by the normalized ticker. Retries the batch on transient 429s.
+ */
+async function fetchLiquidityBatch(tickers: string[]): Promise<Map<string, LiquidityResult>> {
+  const results = new Map<string, LiquidityResult>();
+
+  let quotes: YahooQuoteLike[] = [];
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= STOCK_METRICS_BATCH_MAX_RETRIES; attempt += 1) {
     try {
-      await waitForStockMetricsRateLimit();
-
-      const chart = await yahooFinance.chart(ticker, {
-        period1: '2023-01-01',
-        period2: new Date(),
-        interval: '1d',
-        return: 'array',
+      const response = await yahooFinance.quote(tickers, {
+        fields: [
+          'symbol',
+          'regularMarketPrice',
+          'regularMarketPreviousClose',
+          'averageDailyVolume3Month',
+          'averageDailyVolume10Day',
+        ],
       }, {
         validateResult: false,
-      }) as unknown as ChartResultArray;
-      quotes = chart.quotes;
+      });
+      quotes = (response as unknown as YahooQuoteLike[]) ?? [];
+      lastError = undefined;
       break;
     } catch (error) {
-      if (!isRateLimitError(error) || attempt === STOCK_METRICS_MAX_RETRIES) {
-        throw error;
+      lastError = error;
+      if (!isRateLimitError(error) || attempt === STOCK_METRICS_BATCH_MAX_RETRIES) {
+        break;
       }
 
-      applyStockMetricsCooldown();
-      const backoffMs = STOCK_METRICS_RETRY_BASE_DELAY_MS * (2 ** attempt);
-      console.warn(`[liquidity] Rate limit for ${ticker}; cooling down ${Math.round(STOCK_METRICS_RATE_LIMIT_COOLDOWN_MS / 1000)}s, retrying in ${Math.round(backoffMs / 1000)}s`);
+      const backoffMs = STOCK_METRICS_BATCH_RETRY_BASE_DELAY_MS * (2 ** attempt);
+      console.warn(`[liquidity] Batch rate-limited (size=${tickers.length}); retrying in ${Math.round(backoffMs / 1000)}s`);
       await delay(backoffMs);
     }
   }
 
-  if (!quotes || quotes.length < MIN_HISTORY_BARS) {
-    return {
-      ticker,
-      status: 'failed',
-      reasons: ['not_enough_data'],
-      metrics: {
-        close: 0,
-        avgVolume20: 0,
-      },
-    };
+  if (lastError) {
+    console.error(`[liquidity] Batch fetch failed for ${tickers.length} tickers:`, lastError);
+    for (const ticker of tickers) {
+      results.set(ticker, createDataFetchErrorResult(ticker));
+    }
+    return results;
   }
 
-  const latest = quotes[quotes.length - 1];
-  const last20 = quotes.slice(-20);
-  const close = latest.close ?? 0;
-  const avgVolume20 = Math.round(
-    last20.reduce((sum, day) => sum + (day.volume || 0), 0) / MIN_HISTORY_BARS,
-  );
-
-  const reasons: string[] = [];
-  if (close < MIN_PRICE) {
-    reasons.push('price_below_10');
-  }
-  if (avgVolume20 < MIN_AVG_VOLUME_20) {
-    reasons.push('avg_volume20_below_2m');
+  // Index quotes by ticker so we can map even if Yahoo reorders or drops symbols.
+  const bySymbol = new Map<string, YahooQuoteLike>();
+  for (const quote of quotes) {
+    if (quote.symbol) {
+      bySymbol.set(normalizeTicker(quote.symbol), quote);
+    }
   }
 
-  return {
-    ticker,
-    status: reasons.length === 0 ? 'passed' : 'failed',
-    reasons,
-    metrics: {
-      close,
-      avgVolume20,
-    },
-  };
+  for (const ticker of tickers) {
+    const quote = bySymbol.get(ticker);
+    if (!quote) {
+      results.set(ticker, createMissingDataResult(ticker));
+      continue;
+    }
+
+    const close = quote.regularMarketPrice ?? quote.regularMarketPreviousClose ?? 0;
+    // Prefer 3-month ADV; fall back to 10-day ADV for newer listings.
+    const avgVolume3Month = quote.averageDailyVolume3Month ?? quote.averageDailyVolume10Day ?? 0;
+    results.set(ticker, evaluateLiquidityFromQuote(ticker, close, Math.round(avgVolume3Month)));
+  }
+
+  return results;
 }
 
+/**
+ * Fetch liquidity metrics for a single ticker by going through the batch path.
+ * Kept for callers that only need one ticker; cache-aware so repeat calls in
+ * a workflow don't re-hit Yahoo.
+ */
 export async function getStockMetrics(ticker: string): Promise<LiquidityResult> {
   const normalizedTicker = normalizeTicker(ticker);
   const cached = stockMetricsCache.get(normalizedTicker);
@@ -506,31 +556,18 @@ export async function getStockMetrics(ticker: string): Promise<LiquidityResult> 
     return cached.result;
   }
 
-  const pending = pendingStockMetrics.get(normalizedTicker);
-  if (pending) {
-    return pending;
-  }
-
-  const fetchPromise = fetchStockMetrics(normalizedTicker)
-    .then((result) => {
-      stockMetricsCache.set(normalizedTicker, {
-        result,
-        fetchedAt: Date.now(),
-      });
-      return result;
-    })
-    .finally(() => {
-      pendingStockMetrics.delete(normalizedTicker);
-    });
-
-  pendingStockMetrics.set(normalizedTicker, fetchPromise);
-  return fetchPromise;
+  const batch = await fetchLiquidityBatch([normalizedTicker]);
+  const result = batch.get(normalizedTicker) ?? createMissingDataResult(normalizedTicker);
+  stockMetricsCache.set(normalizedTicker, {
+    result,
+    fetchedAt: Date.now(),
+  });
+  return result;
 }
 
 export function getStockMetricsCacheStats() {
   return {
     entries: stockMetricsCache.size,
-    pending: pendingStockMetrics.size,
     ttlMs: STOCK_METRICS_CACHE_TTL_MS,
   };
 }
@@ -544,59 +581,80 @@ function logStockMetricsProgress(enabled: boolean, message: string) {
 /**
  * Extracts liquidity metrics for every ticker in the stock pool.
  * Results include both passed and failed tickers so the caller can inspect the full pool.
+ *
+ * Implementation notes:
+ *   - Uses Yahoo's batched `quote()` endpoint, which accepts ~200 tickers per
+ *     HTTP request, so SP500 (~500 tickers) becomes ~3 HTTP requests.
+ *   - Multiple batches run in parallel up to `STOCK_METRICS_BATCH_CONCURRENCY`.
+ *   - Per-ticker results are cached for `STOCK_METRICS_CACHE_TTL_MS` so repeat
+ *     workflows in the same session re-use prior metrics instead of re-hitting
+ *     Yahoo.
  */
 export async function getStocksLiquidityMetrics(tickers: string[], options: StockMetricsScanOptions = {}): Promise<LiquidityResults> {
+  const startedAt = Date.now();
   const uniqueRequestedTickers = uniqueTickers(tickers);
   const maxTickers = options.maxTickers ?? STOCK_METRICS_DEFAULT_MAX_TICKERS;
   const selectedTickers = uniqueRequestedTickers.slice(0, maxTickers);
-  const batches = chunkArray(selectedTickers, STOCK_METRICS_BATCH_SIZE);
-  const results: LiquidityResult[] = [];
-  let cacheHits = 0;
-  let cacheMisses = 0;
-  let errors = 0;
   const logPrefix = options.logLabel ? `${options.logLabel}: ` : '';
 
+  // Step 1: serve cache hits straight from memory; collect uncached tickers.
+  const resultsByTicker = new Map<string, LiquidityResult>();
+  const tickersToFetch: string[] = [];
+  let cacheHits = 0;
+  let cacheMisses = 0;
+  const now = Date.now();
+
+  for (const ticker of selectedTickers) {
+    const cached = stockMetricsCache.get(ticker);
+    if (cached && now - cached.fetchedAt < STOCK_METRICS_CACHE_TTL_MS) {
+      resultsByTicker.set(ticker, cached.result);
+      cacheHits += 1;
+    } else {
+      tickersToFetch.push(ticker);
+      cacheMisses += 1;
+    }
+  }
+
+  const batches = chunkArray(tickersToFetch, STOCK_METRICS_BATCH_SIZE);
+
   logStockMetricsProgress(
-      Boolean(options.logProgress),
-    `${logPrefix}starting liquidity metrics for ${selectedTickers.length}/${uniqueRequestedTickers.length} tickers (${batches.length} batches, ${STOCK_METRICS_CONCURRENCY} concurrency, ${STOCK_METRICS_REQUESTS_PER_SECOND} req/sec, ${STOCK_METRICS_JITTER_MS}ms jitter)`,
+    Boolean(options.logProgress),
+    `${logPrefix}starting liquidity metrics for ${selectedTickers.length}/${uniqueRequestedTickers.length} tickers (cache hits ${cacheHits}, ${batches.length} batches × up to ${STOCK_METRICS_BATCH_SIZE} via Yahoo quote(); batch concurrency ${STOCK_METRICS_BATCH_CONCURRENCY})`,
   );
 
-  for (const [batchIndex, batch] of batches.entries()) {
+  // Step 2: fetch the misses in parallel batches, each one a single HTTP request.
+  let errors = 0;
+  await runWithConcurrency(batches, STOCK_METRICS_BATCH_CONCURRENCY, async (batch, batchIndex) => {
     logStockMetricsProgress(
       Boolean(options.logProgress),
       `${logPrefix}batch ${batchIndex + 1}/${batches.length} started (${batch.length} tickers)`,
     );
 
-    const batchResults = await runWithConcurrency(batch, STOCK_METRICS_CONCURRENCY, async (ticker) => {
-      const cached = stockMetricsCache.get(ticker);
+    const batchStart = Date.now();
+    const batchResults = await fetchLiquidityBatch(batch);
 
-      if (cached && Date.now() - cached.fetchedAt < STOCK_METRICS_CACHE_TTL_MS) {
-        cacheHits += 1;
-      } else {
-        cacheMisses += 1;
-      }
-
-      try {
-        return await getStockMetrics(ticker);
-      } catch (error) {
+    for (const ticker of batch) {
+      const result = batchResults.get(ticker) ?? createMissingDataResult(ticker);
+      if (result.reasons.includes('data_fetch_error')) {
         errors += 1;
-        console.error(`Error processing ${ticker}:`, error);
-        const result = createDataFetchErrorResult(ticker);
-        stockMetricsCache.set(ticker, {
-          result,
-          fetchedAt: Date.now(),
-        });
-        return result;
       }
-    });
-
-    results.push(...batchResults);
+      stockMetricsCache.set(ticker, {
+        result,
+        fetchedAt: Date.now(),
+      });
+      resultsByTicker.set(ticker, result);
+    }
 
     logStockMetricsProgress(
       Boolean(options.logProgress),
-      `${logPrefix}batch ${batchIndex + 1}/${batches.length} completed; processed ${results.length}/${selectedTickers.length}, cache hits ${cacheHits}, misses ${cacheMisses}, errors ${errors}`,
+      `${logPrefix}batch ${batchIndex + 1}/${batches.length} completed in ${Date.now() - batchStart}ms`,
     );
-  }
+  });
+
+  // Step 3: assemble in original input order so callers can rely on alignment.
+  const results: LiquidityResult[] = selectedTickers.map(
+    (ticker) => resultsByTicker.get(ticker) ?? createDataFetchErrorResult(ticker),
+  );
 
   const stats: StockMetricsFetchStats = {
     requestedCount: uniqueRequestedTickers.length,
@@ -607,17 +665,14 @@ export async function getStocksLiquidityMetrics(tickers: string[], options: Stoc
     errors,
     batches: batches.length,
     batchSize: STOCK_METRICS_BATCH_SIZE,
-    concurrency: STOCK_METRICS_CONCURRENCY,
+    concurrency: STOCK_METRICS_BATCH_CONCURRENCY,
     cacheTtlMs: STOCK_METRICS_CACHE_TTL_MS,
-    requestsPerSecond: STOCK_METRICS_REQUESTS_PER_SECOND,
-    jitterMs: STOCK_METRICS_JITTER_MS,
-    maxRetries: STOCK_METRICS_MAX_RETRIES,
-    rateLimitCooldownMs: STOCK_METRICS_RATE_LIMIT_COOLDOWN_MS,
+    durationMs: Date.now() - startedAt,
   };
 
   logStockMetricsProgress(
     Boolean(options.logProgress),
-    `${logPrefix}completed liquidity metrics; passed ${results.filter((result) => result.status === 'passed').length}/${results.length}, skipped ${stats.skippedCount}`,
+    `${logPrefix}completed liquidity metrics in ${stats.durationMs}ms; passed ${results.filter((result) => result.status === 'passed').length}/${results.length}, errors ${errors}, skipped ${stats.skippedCount}`,
   );
 
   Object.defineProperty(results, 'fetchStats', {

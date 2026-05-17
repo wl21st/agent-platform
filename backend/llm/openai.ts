@@ -8,18 +8,32 @@ import {
 import type { DecisionData, FinancialData, NewsData, NormalizedScores, RiskAssessmentData, TechnicalData } from '@/lib/stockAnalysisInterfaces';
 import type { ToolExecutionResult } from '@backend/agents/toolAgents';
 
-let openAIClient: OpenAI | null | undefined;
+const DEFAULT_LLM_MODEL = 'openai/gpt-4.1-mini';
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
-function getOpenAIClient() {
-  if (openAIClient !== undefined) {
-    return openAIClient;
+let openRouterClient: OpenAI | null | undefined;
+
+function getLLMModel() {
+  return process.env.OPENROUTER_MODEL || DEFAULT_LLM_MODEL;
+}
+
+function getOpenRouterClient() {
+  if (openRouterClient !== undefined) {
+    return openRouterClient;
   }
 
-  openAIClient = process.env.OPENAI_API_KEY
-    ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  openRouterClient = process.env.OPENROUTER_API_KEY
+    ? new OpenAI({
+        apiKey: process.env.OPENROUTER_API_KEY,
+        baseURL: OPENROUTER_BASE_URL,
+        defaultHeaders: {
+          'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'http://localhost:3000',
+          'X-Title': process.env.OPENROUTER_APP_NAME || 'Agents Platform',
+        },
+    })
     : null;
 
-  return openAIClient;
+  return openRouterClient;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -204,27 +218,23 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
 }
 
 /**
- * Build multi-turn input messages for the Responses API.
- * Uses only system + user roles (no assistant role in input)
- * to avoid potential API compatibility issues.
+ * Build multi-turn chat messages for OpenRouter's OpenAI-compatible API.
  */
-function buildMultiTurnInput(params: {
+function buildMultiTurnMessages(params: {
   systemPrompt: string;
   history: ConversationTurn[];
   currentInput: string;
   currentUserSuffix?: string;
 }) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const input: any[] = [];
+  const messages: any[] = [];
 
   // System message
-  input.push({
+  messages.push({
     role: 'system',
-    content: [{ type: 'input_text', text: params.systemPrompt }],
+    content: params.systemPrompt,
   });
 
-  // Conversation history — pack previous turns into the system context
-  // to avoid issues with assistant role in Responses API input
   const allTurns = params.history;
   const previousTurns =
     allTurns.length > 0 &&
@@ -234,24 +244,10 @@ function buildMultiTurnInput(params: {
       : allTurns;
 
   const recentTurns = previousTurns.slice(-14);
-  if (recentTurns.length > 0) {
-    const historyText = recentTurns
-      .map((t) => `[${t.role}]: ${t.content}`)
-      .join('\n\n');
-
-    input.push({
-      role: 'user',
-      content: [
-        {
-          type: 'input_text',
-          text: `Here is the recent conversation history:\n\n${historyText}\n\n---\nPlease use this context for my next message.`,
-        },
-      ],
-    });
-
-    input.push({
-      role: 'assistant',
-      content: 'I understand the conversation context. Please go ahead with your message.',
+  for (const turn of recentTurns) {
+    messages.push({
+      role: turn.role,
+      content: turn.agentName ? `[${turn.agentName}] ${turn.content}` : turn.content,
     });
   }
 
@@ -260,12 +256,12 @@ function buildMultiTurnInput(params: {
     ? `${params.currentInput}\n\n${params.currentUserSuffix}`
     : params.currentInput;
 
-  input.push({
+  messages.push({
     role: 'user',
-    content: [{ type: 'input_text', text: messageText }],
+    content: messageText,
   });
 
-  return input;
+  return messages;
 }
 
 /**
@@ -278,23 +274,23 @@ export async function classifyUserIntent(params: {
   history: ConversationTurn[];
   preferences: UserPreferences;
 }): Promise<IntentClassification | null> {
-  const client = getOpenAIClient();
+  const client = getOpenRouterClient();
   if (!client) return null;
 
   try {
-    const input = buildMultiTurnInput({
+    const messages = buildMultiTurnMessages({
       systemPrompt: buildIntentSystemPrompt(params.preferences),
       history: params.history,
       currentInput: params.input,
     });
 
-    const response = await client.responses.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-      input,
+    const response = await client.chat.completions.create({
+      model: getLLMModel(),
+      messages,
     });
 
     // Parse the JSON response (the system prompt instructs JSON-only output)
-    const text = response.output_text.trim();
+    const text = response.choices[0]?.message?.content?.trim() || '';
     // Handle possible markdown code fences around JSON
     const jsonText = text.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(jsonText) as IntentClassification;
@@ -405,7 +401,7 @@ function buildResponseSystemPrompt(preferences: UserPreferences): string {
 
 /**
  * Detect temperature conversion request and generate a response from stored
- * weather data. Works as a fallback when OpenAI is not available.
+ * weather data. Works as a fallback when the LLM is not available.
  */
 function tryTemperatureConversion(input: string, preferences: UserPreferences): string | null {
   const w = preferences.lastWeatherResult;
@@ -510,7 +506,7 @@ function buildFallbackResponse(params: {
       '',
       `**Your follow-up:** ${params.input}`,
       '',
-      `*For more intelligent follow-up responses, configure a valid OPENAI_API_KEY.*`,
+      `*For more intelligent follow-up responses, configure a valid OPENROUTER_API_KEY.*`,
     ].filter(Boolean).join('\n');
   }
 
@@ -519,7 +515,7 @@ function buildFallbackResponse(params: {
     '',
     `**Your request:** ${params.input}`,
     '',
-    `I can route weather and search requests to specialized tools. For general conversation, please configure an OPENAI_API_KEY.`,
+    `I can route weather and search requests to specialized tools. For general conversation, please configure an OPENROUTER_API_KEY.`,
   ].join('\n');
 }
 
@@ -533,7 +529,7 @@ export async function generateAssistantResponse(params: {
   preferences: UserPreferences;
   history: ConversationTurn[];
 }) {
-  const client = getOpenAIClient();
+  const client = getOpenRouterClient();
   if (!client) return buildFallbackResponse(params);
 
   try {
@@ -578,19 +574,19 @@ export async function generateAssistantResponse(params: {
       ].join('\n');
     }
 
-    const input = buildMultiTurnInput({
+    const messages = buildMultiTurnMessages({
       systemPrompt: buildResponseSystemPrompt(params.preferences),
       history: params.history,
       currentInput: params.input,
       currentUserSuffix: toolSuffix,
     });
 
-    const response = await client.responses.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-      input,
+    const response = await client.chat.completions.create({
+      model: getLLMModel(),
+      messages,
     });
 
-    return response.output_text || buildFallbackResponse(params);
+    return response.choices[0]?.message?.content || buildFallbackResponse(params);
   } catch (error) {
     console.error('[generateAssistantResponse] LLM response generation failed:', error);
     return buildFallbackResponse(params);
@@ -642,7 +638,7 @@ export async function generateParallelResponse(params: {
     return buildParallelFallbackResponse([], errors);
   }
 
-  const client = getOpenAIClient();
+  const client = getOpenRouterClient();
   if (!client) {
     return buildParallelFallbackResponse(params.toolResults, errors);
   }
@@ -697,20 +693,20 @@ export async function generateParallelResponse(params: {
       '- Do NOT re-ask clarifying questions — just present the results.',
     ].join('\n');
 
-    const input = buildMultiTurnInput({
+    const messages = buildMultiTurnMessages({
       systemPrompt: buildResponseSystemPrompt(params.preferences),
       history: params.history,
       currentInput: params.input,
       currentUserSuffix: suffix,
     });
 
-    const response = await client.responses.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-      input,
+    const response = await client.chat.completions.create({
+      model: getLLMModel(),
+      messages,
     });
 
     return (
-      response.output_text || buildParallelFallbackResponse(params.toolResults, errors)
+      response.choices[0]?.message?.content || buildParallelFallbackResponse(params.toolResults, errors)
     );
   } catch (error) {
     console.error('[generateParallelResponse] LLM response generation failed:', error);
@@ -736,7 +732,7 @@ export async function generateRiskAssessment(params: {
   newsData: NewsData;
 }): Promise<RiskAssessmentData> {
   const { ticker, currentPrice, normalizedScores, financialData, technicalData, newsData } = params;
-  const client = getOpenAIClient();
+  const client = getOpenRouterClient();
 
   // Fallback if no LLM
   const fallback: RiskAssessmentData = {
@@ -806,15 +802,15 @@ export async function generateRiskAssessment(params: {
       `News Sentiment: ${newsData.overallSentiment?.label ?? 'neutral'} (score=${newsData.overallSentiment?.score?.toFixed(2) ?? '0'}), Articles=${newsData.articles.length}`,
     ].join('\n');
 
-    const response = await client.responses.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-      input: [
-        { role: 'system', content: [{ type: 'input_text', text: systemPrompt }] },
-        { role: 'user', content: [{ type: 'input_text', text: userMessage }] },
+    const response = await client.chat.completions.create({
+      model: getLLMModel(),
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
       ],
     });
 
-    const text = response.output_text.trim().replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const text = (response.choices[0]?.message?.content || '').trim().replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(text) as RiskAssessmentData;
     parsed.timestamp = new Date().toISOString();
     parsed.ticker = ticker;
@@ -829,11 +825,11 @@ export async function generateRiskAssessment(params: {
  * Simple LLM call for text generation
  */
 export async function callLLM(params: { messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>; temperature?: number }): Promise<{ content: string }> {
-  const client = getOpenAIClient();
-  if (!client) throw new Error('OpenAI client not available');
+  const client = getOpenRouterClient();
+  if (!client) throw new Error('OpenRouter client not available');
 
   const response = await client.chat.completions.create({
-    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    model: getLLMModel(),
     messages: params.messages,
     temperature: params.temperature || 0.7,
   });
@@ -859,7 +855,7 @@ export async function generateInvestmentDecision(params: {
   newsData: NewsData;
 }): Promise<DecisionData> {
   const { ticker, currentPrice, normalizedScores, riskAssessment, financialData, technicalData, newsData } = params;
-  const client = getOpenAIClient();
+  const client = getOpenRouterClient();
 
   const fallback: DecisionData = {
     ticker,
@@ -932,15 +928,15 @@ export async function generateInvestmentDecision(params: {
       `News: ${newsData.articles.length} articles, overall sentiment=${newsData.overallSentiment?.label ?? 'neutral'}`,
     ].join('\n');
 
-    const response = await client.responses.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-      input: [
-        { role: 'system', content: [{ type: 'input_text', text: systemPrompt }] },
-        { role: 'user', content: [{ type: 'input_text', text: userMessage }] },
+    const response = await client.chat.completions.create({
+      model: getLLMModel(),
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
       ],
     });
 
-    const text = response.output_text.trim().replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const text = (response.choices[0]?.message?.content || '').trim().replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(text) as DecisionData;
     parsed.timestamp = new Date().toISOString();
     parsed.ticker = ticker;
