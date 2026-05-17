@@ -30,11 +30,17 @@ import {
   buildCombinedScrapeAndSafetyResult,
   scrapeIngredientsOnly,
 } from '@backend/agents/ingredientsScrapeAgent';
+import type { LiquidityResult } from '@backend/agents/liquidity';
 import { runLiquidityAgent } from '@backend/agents/liquidityAgent';
 import { runNewsScrapeAgent } from '@backend/agents/newsScrapeAgent';
 import { runNewsSummaryAgent } from '@backend/agents/newsSummaryAgent';
 import { buildNormalizedScores, runRiskAssessment } from '@backend/agents/riskAgent';
-import { runScreenHitAgent } from '@backend/agents/screenHitAgent';
+import {
+  screenPullback,
+  screenPullbackQuoteCandidates,
+  type PullbackQuoteCandidateInput,
+  type ScreenHit,
+} from '@backend/agents/screening';
 import { runStockDataAgent } from '@backend/agents/stockDataAgent';
 import { runTechnicalAnalysisAgent } from '@backend/agents/technicalAnalysisAgent';
 import {
@@ -571,10 +577,16 @@ async function* streamNewsSummaryWorkflow(params: {
 /**
  * US stock scan workflow coordinated by the Orchestrator.
  *
- * Pipeline:
- *   1. Liquidity Filter Agent runs the liquidity script against the default US universe
- *   2. Screen Hit Agent runs all technical screening scripts against liquid tickers
- *   3. Final Select Agent receives screening hits and displays the top 10 table
+ * Pipeline (pullback-only for performance — trend/momentum agents still
+ * exist but are not used here so a "scan Nasdaq" run can finish in tens of
+ * seconds instead of minutes):
+ *   1. Liquidity Filter Agent — Yahoo `quote()` batches over the universe.
+ *   2. Pullback Stage 1 (quote-only prefilter) — drops every liquid ticker
+ *      whose 50/200 DMA + price already disqualify it from a pullback
+ *      setup. Zero extra HTTP requests (data already pulled in step 1).
+ *   3. Pullback Stage 2 (chart-based) — runs the full pullback rule via
+ *      `screenPullback` only on the small Stage-1 candidate set.
+ *   4. Final Select Agent — top 10 trade plans by score.
  */
 async function* streamUsStockScanWorkflow(params: {
   sessionId: string;
@@ -598,7 +610,7 @@ async function* streamUsStockScanWorkflow(params: {
     },
     {
       id: 'screen-hit-tool',
-      description: 'Run trend, pullback, and momentum screening on liquid stocks',
+      description: 'Pullback screening (quote prefilter + chart confirmation)',
       status: 'pending',
       agent: SCREEN_HIT_AGENT.name,
     },
@@ -624,9 +636,9 @@ async function* streamUsStockScanWorkflow(params: {
     ? liquidityUniverse.label
     : 'Requested stock universe';
 
-  const liquidStocks = Array.isArray(liquidityResult.metadata.results)
+  const liquidStocks = (Array.isArray(liquidityResult.metadata.results)
     ? liquidityResult.metadata.results
-    : [];
+    : []) as LiquidityResult[];
   const liquidTickers = liquidStocks
     .map((stock) => {
       if (stock && typeof stock === 'object' && 'ticker' in stock) {
@@ -687,23 +699,42 @@ async function* streamUsStockScanWorkflow(params: {
   tasks = markTask(tasks, 'screen-hit-tool', 'running');
   yield { type: 'tasks', tasks };
 
-  const screenResult = await runScreenHitAgent({
-    input: `all setups: ${liquidTickers.join(', ')}`,
-    preferences,
-  });
+  // Stage 1: quote-only pullback prefilter. No extra HTTP — uses fields
+  // already returned by the liquidity batch quote() call.
+  const stage1Inputs: PullbackQuoteCandidateInput[] = liquidStocks.map((stock) => ({
+    ticker: stock.ticker,
+    close: stock.metrics.close,
+    fiftyDayAverage: stock.metrics.fiftyDayAverage,
+    twoHundredDayAverage: stock.metrics.twoHundredDayAverage,
+  }));
+  const stage1 = screenPullbackQuoteCandidates(stage1Inputs);
 
-  const screenHits = Array.isArray(screenResult.metadata.results)
-    ? screenResult.metadata.results
+  console.info(
+    `[stock-scan] Pullback Stage 1 (quote-only prefilter): ${stage1.candidates.length} candidates from ${stage1.inputCount} liquid tickers; rejected ${stage1.rejectedByQuote}, missing 50/200 DMA ${stage1.missingMaData}`,
+  );
+
+  // Stage 2: full pullback rule on chart data, but only for Stage-1 survivors.
+  const stage2Started = Date.now();
+  const screenHits: ScreenHit[] = stage1.candidates.length > 0
+    ? await screenPullback(stage1.candidates)
     : [];
-
-  console.info(`[stock-scan] Screen Hit Agent completed: ${screenHits.length} hits from ${liquidTickers.length} liquid tickers`);
+  console.info(
+    `[stock-scan] Pullback Stage 2 (chart confirmation): ${screenHits.length} hits from ${stage1.candidates.length} Stage-1 candidates in ${Date.now() - stage2Started}ms`,
+  );
 
   tasks = markTask(tasks, 'screen-hit-tool', screenHits.length > 0 ? 'completed' : 'failed');
   yield { type: 'tasks', tasks };
 
+  const screenMarkdown = [
+    '# 🎯 Screen Hit Agent — Pullback Only',
+    '',
+    `Stage 1 quote-only prefilter: ${stage1.candidates.length} pullback candidates from ${stage1.inputCount} liquid tickers (rejected ${stage1.rejectedByQuote}; ${stage1.missingMaData} let through with missing 50/200 DMA).`,
+    `Stage 2 chart confirmation: ${screenHits.length} pullback setup${screenHits.length === 1 ? '' : 's'} confirmed.`,
+  ].join('\n');
+
   const screenMessage = createMessage({
     role: 'assistant',
-    content: screenResult.markdown,
+    content: screenMarkdown,
     agent: SCREEN_HIT_AGENT,
     status: 'done',
   });
@@ -717,7 +748,8 @@ async function* streamUsStockScanWorkflow(params: {
     const noHitsMarkdown = [
       '# US Stock Scan',
       '',
-      `Liquidity Filter Agent found ${liquidTickers.length} liquid stocks, but Screen Hit Agent found no trend, pullback, or momentum hits.`,
+      `Liquidity Filter Agent found ${liquidTickers.length} liquid stocks, but the pullback screen found no setups today.`,
+      `Stage 1 narrowed the pool to ${stage1.candidates.length} pullback candidates, none of which passed the chart-confirmed pullback rule.`,
       '',
       'No top 10 table was generated because there are no final candidates today.',
     ].join('\n');
@@ -753,11 +785,12 @@ async function* streamUsStockScanWorkflow(params: {
   yield { type: 'tasks', tasks };
 
   const finalMarkdown = [
-    '# Today\'s US Stock Scan - Top 10',
+    '# Today\'s US Stock Scan - Top 10 (Pullback)',
     '',
     `Universe: ${universeLabel}`,
     `Liquidity Filter Agent: ${liquidTickers.length}/${totalUniverseTickers} symbols passed`,
-    `Screen Hit Agent: ${screenHits.length} technical hits found`,
+    `Pullback Stage 1 (quote prefilter): ${stage1.candidates.length} candidates from ${stage1.inputCount} liquid tickers`,
+    `Pullback Stage 2 (chart confirmation): ${screenHits.length} setup${screenHits.length === 1 ? '' : 's'} confirmed`,
     '',
     finalResult.markdown,
   ].join('\n');

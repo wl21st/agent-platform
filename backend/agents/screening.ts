@@ -324,6 +324,84 @@ export async function screenPullback(tickers: string[]): Promise<ScreenHit[]> {
 }
 
 /**
+ * Pullback Stage-1 prefilter — quote-only, no chart fetches.
+ *
+ * The full pullback setup needs SMA20 / 60-day high / 14-day ATR which only
+ * come from the chart endpoint, so the previous implementation hit Yahoo
+ * once per liquid ticker. For broad universes (NASDAQ ~3500) that meant
+ * thousands of HTTP requests and minutes of wall time.
+ *
+ * The fast-path uses Yahoo's `quote()` fields (already pulled during the
+ * liquidity step) to drop tickers that *cannot* be pullback candidates:
+ *
+ *   1. `price > twoHundredDayAverage`         long-term uptrend intact
+ *   2. `fiftyDayAverage > twoHundredDayAverage`  intermediate uptrend intact
+ *   3. `price >= fiftyDayAverage * 0.97`      not broken below 50DMA
+ *   4. `price <= fiftyDayAverage * 1.10`      not already extended above 50DMA
+ *
+ * Anything that fails these has no chance of passing the full pullback rule
+ * so we don't waste a chart request on it. Tickers missing SMA data fall
+ * through (we do not exclude them — the Stage-2 check will tell us for sure).
+ */
+export interface PullbackQuoteCandidateInput {
+  ticker: string;
+  close: number;
+  fiftyDayAverage?: number;
+  twoHundredDayAverage?: number;
+}
+
+export interface PullbackPrefilterResult {
+  candidates: string[];
+  rejectedByQuote: number;
+  missingMaData: number;
+  inputCount: number;
+}
+
+const PULLBACK_PREFILTER_SMA50_FLOOR = 0.97;
+const PULLBACK_PREFILTER_SMA50_CEILING = 1.10;
+
+export function screenPullbackQuoteCandidates(inputs: PullbackQuoteCandidateInput[]): PullbackPrefilterResult {
+  const candidates: string[] = [];
+  let rejectedByQuote = 0;
+  let missingMaData = 0;
+
+  for (const input of inputs) {
+    const { ticker, close, fiftyDayAverage, twoHundredDayAverage } = input;
+
+    if (close <= 0) {
+      rejectedByQuote += 1;
+      continue;
+    }
+
+    // Without SMA50 / SMA200 we can't make a quote-only judgment; let the
+    // ticker through so Stage 2 has a chance to pass it on chart data.
+    if (!fiftyDayAverage || fiftyDayAverage <= 0 || !twoHundredDayAverage || twoHundredDayAverage <= 0) {
+      missingMaData += 1;
+      candidates.push(ticker);
+      continue;
+    }
+
+    const longTermUptrend = close > twoHundredDayAverage;
+    const midTermUptrend = fiftyDayAverage > twoHundredDayAverage;
+    const aboveSma50Floor = close >= fiftyDayAverage * PULLBACK_PREFILTER_SMA50_FLOOR;
+    const belowSma50Ceiling = close <= fiftyDayAverage * PULLBACK_PREFILTER_SMA50_CEILING;
+
+    if (longTermUptrend && midTermUptrend && aboveSma50Floor && belowSma50Ceiling) {
+      candidates.push(ticker);
+    } else {
+      rejectedByQuote += 1;
+    }
+  }
+
+  return {
+    candidates,
+    rejectedByQuote,
+    missingMaData,
+    inputCount: inputs.length,
+  };
+}
+
+/**
  * Screen stocks for momentum: gap > 5%, close > open, volume > 2 * volAvg20, close > sma50, 5-day return <= 30%, >= 60 bars
  */
 export async function screenMomentum(tickers: string[]): Promise<ScreenHit[]> {

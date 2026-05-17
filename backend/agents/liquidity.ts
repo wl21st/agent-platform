@@ -9,6 +9,12 @@ const yahooFinance = new YahooFinance();
  * average daily volume reported on the quote endpoint. It replaced the
  * previous 20-day SMA volume so the whole liquidity filter can run in a few
  * batched HTTP requests instead of one chart fetch per ticker.
+ *
+ * `fiftyDayAverage` / `twoHundredDayAverage` are Yahoo's reported moving
+ * averages. They are pulled "for free" alongside the liquidity check so the
+ * pullback fast-path (`screenPullbackQuoteCandidates`) can prefilter the
+ * universe to a small subset of pullback candidates without a per-ticker
+ * chart fetch. Values may be undefined for very young listings.
  */
 export interface LiquidityResult {
   ticker: string;
@@ -17,6 +23,8 @@ export interface LiquidityResult {
   metrics: {
     close: number;
     avgVolume3Month: number;
+    fiftyDayAverage?: number;
+    twoHundredDayAverage?: number;
   };
 }
 
@@ -181,7 +189,13 @@ function createMissingDataResult(ticker: string): LiquidityResult {
   };
 }
 
-function evaluateLiquidityFromQuote(ticker: string, close: number, avgVolume3Month: number): LiquidityResult {
+function evaluateLiquidityFromQuote(
+  ticker: string,
+  close: number,
+  avgVolume3Month: number,
+  fiftyDayAverage: number | undefined,
+  twoHundredDayAverage: number | undefined,
+): LiquidityResult {
   const reasons: string[] = [];
   if (close <= 0 || avgVolume3Month <= 0) {
     return createMissingDataResult(ticker);
@@ -200,6 +214,8 @@ function evaluateLiquidityFromQuote(ticker: string, close: number, avgVolume3Mon
     metrics: {
       close,
       avgVolume3Month,
+      fiftyDayAverage: fiftyDayAverage && fiftyDayAverage > 0 ? fiftyDayAverage : undefined,
+      twoHundredDayAverage: twoHundredDayAverage && twoHundredDayAverage > 0 ? twoHundredDayAverage : undefined,
     },
   };
 }
@@ -470,6 +486,8 @@ type YahooQuoteLike = {
   regularMarketPreviousClose?: number;
   averageDailyVolume3Month?: number;
   averageDailyVolume10Day?: number;
+  fiftyDayAverage?: number;
+  twoHundredDayAverage?: number;
 };
 
 /**
@@ -491,6 +509,10 @@ async function fetchLiquidityBatch(tickers: string[]): Promise<Map<string, Liqui
           'regularMarketPreviousClose',
           'averageDailyVolume3Month',
           'averageDailyVolume10Day',
+          // Pulled here so the pullback Stage-1 prefilter can run without an
+          // additional HTTP call per ticker.
+          'fiftyDayAverage',
+          'twoHundredDayAverage',
         ],
       }, {
         validateResult: false,
@@ -536,7 +558,16 @@ async function fetchLiquidityBatch(tickers: string[]): Promise<Map<string, Liqui
     const close = quote.regularMarketPrice ?? quote.regularMarketPreviousClose ?? 0;
     // Prefer 3-month ADV; fall back to 10-day ADV for newer listings.
     const avgVolume3Month = quote.averageDailyVolume3Month ?? quote.averageDailyVolume10Day ?? 0;
-    results.set(ticker, evaluateLiquidityFromQuote(ticker, close, Math.round(avgVolume3Month)));
+    results.set(
+      ticker,
+      evaluateLiquidityFromQuote(
+        ticker,
+        close,
+        Math.round(avgVolume3Month),
+        quote.fiftyDayAverage,
+        quote.twoHundredDayAverage,
+      ),
+    );
   }
 
   return results;
