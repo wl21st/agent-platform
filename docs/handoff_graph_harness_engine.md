@@ -587,7 +587,6 @@ export type StreamEvent =
 ### 14.3 OpenSpec Artifacts & Local Files
 * **OpenSpec Change Proposal**: [proposal.md](file:///Users/I073228/SAPDevelop/workspaces/ai/work/agent-platform/openspec/changes/add-graph-harness-engine/proposal.md)
 * **OpenSpec Delta Spec**: [spec.md](file:///Users/I073228/SAPDevelop/workspaces/ai/work/agent-platform/openspec/changes/add-graph-harness-engine/specs/graph-harness-engine/spec.md)
-* **Universal Statusline Script**: [.agent/statusline.sh](file:///Users/I073228/SAPDevelop/workspaces/ai/work/agent-platform/.agent/statusline.sh)
 * **Legacy Orchestrator**: [backend/orchestrator/agentOrchestrator.ts](file:///Users/I073228/SAPDevelop/workspaces/ai/work/agent-platform/backend/orchestrator/agentOrchestrator.ts)
 * **Legacy Tool Registry**: [backend/agents/toolAgents.ts](file:///Users/I073228/SAPDevelop/workspaces/ai/work/agent-platform/backend/agents/toolAgents.ts)
 
