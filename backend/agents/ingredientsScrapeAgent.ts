@@ -606,7 +606,7 @@ async function scrapeIngredients(url: string): Promise<{
   candidates: Candidate[];
   strategy: string;
 }> {
-  let allCandidates: Candidate[] = [];
+  const allCandidates: Candidate[] = [];
   let strategy = 'none';
 
   // ── Strategy 1: HTTP fetch ──────────────────────────────────────────

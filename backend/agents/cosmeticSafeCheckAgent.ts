@@ -112,7 +112,7 @@ const KNOWN_INGREDIENTS: IngredientRisk[] = [
  */
 function parseIngredients(input: string): string[] {
   // Remove common prefixes
-  let text = input
+  const text = input
     .replace(/^(?:ingredients?|composition|contains|成分|配方|成分表)\s*[:：]?\s*/i, '')
     .trim();
 
