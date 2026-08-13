@@ -8,24 +8,28 @@ import {
 import type { DecisionData, FinancialData, NewsData, NormalizedScores, RiskAssessmentData, TechnicalData } from '@/lib/stockAnalysisInterfaces';
 import type { ToolExecutionResult } from '@backend/agents/toolAgents';
 
-const DEFAULT_LLM_MODEL = 'openai/gpt-4.1-mini';
-const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+const DEFAULT_LLM_BASE_MODEL = 'openai/gpt-4.1-mini';
+const DEFAULT_LLM_API_URL = 'https://openrouter.ai/api/v1';
 
-let openRouterClient: OpenAI | null | undefined;
+let openAiClient: OpenAI | null | undefined;
 
-function getLLMModel() {
-  return process.env.OPENROUTER_MODEL || DEFAULT_LLM_MODEL;
+function getLlmBaseModel() {
+  return process.env.LLM_BASE_MODEL || DEFAULT_LLM_BASE_MODEL;
 }
 
-function getOpenRouterClient() {
-  if (openRouterClient !== undefined) {
-    return openRouterClient;
+function getLlmApiUrl(): string {
+  return process.env.LLM_API_BASE_URL || process.env.LLM_API_URL || DEFAULT_LLM_API_URL;
+}
+
+function getOpenAiClient() {
+  if (openAiClient !== undefined) {
+    return openAiClient;
   }
 
-  openRouterClient = process.env.OPENROUTER_API_KEY
+  openAiClient = process.env.LLM_API_KEY
     ? new OpenAI({
-        apiKey: process.env.OPENROUTER_API_KEY,
-        baseURL: OPENROUTER_BASE_URL,
+        apiKey: process.env.LLM_API_KEY,
+        baseURL: getLlmApiUrl(),
         defaultHeaders: {
           'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'http://localhost:3000',
           'X-Title': process.env.OPENROUTER_APP_NAME || 'Agents Platform',
@@ -33,7 +37,7 @@ function getOpenRouterClient() {
     })
     : null;
 
-  return openRouterClient;
+  return openAiClient;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -218,7 +222,7 @@ function buildIntentSystemPrompt(preferences: UserPreferences): string {
 }
 
 /**
- * Build multi-turn chat messages for OpenRouter's OpenAI-compatible API.
+ * Build multi-turn chat messages for OpenAI-compatible API.
  */
 function buildMultiTurnMessages(params: {
   systemPrompt: string;
@@ -274,7 +278,7 @@ export async function classifyUserIntent(params: {
   history: ConversationTurn[];
   preferences: UserPreferences;
 }): Promise<IntentClassification | null> {
-  const client = getOpenRouterClient();
+  const client = getOpenAiClient();
   if (!client) return null;
 
   try {
@@ -285,7 +289,7 @@ export async function classifyUserIntent(params: {
     });
 
     const response = await client.chat.completions.create({
-      model: getLLMModel(),
+      model: getLlmBaseModel(),
       messages,
     });
 
@@ -506,7 +510,7 @@ function buildFallbackResponse(params: {
       '',
       `**Your follow-up:** ${params.input}`,
       '',
-      `*For more intelligent follow-up responses, configure a valid OPENROUTER_API_KEY.*`,
+      `*For more intelligent follow-up responses, configure LLM_API_KEY.*`,
     ].filter(Boolean).join('\n');
   }
 
@@ -515,7 +519,7 @@ function buildFallbackResponse(params: {
     '',
     `**Your request:** ${params.input}`,
     '',
-    `I can route weather and search requests to specialized tools. For general conversation, please configure an OPENROUTER_API_KEY.`,
+    `I can route weather and search requests to specialized tools. For general conversation, configure LLM_API_KEY.`,
   ].join('\n');
 }
 
@@ -529,7 +533,7 @@ export async function generateAssistantResponse(params: {
   preferences: UserPreferences;
   history: ConversationTurn[];
 }) {
-  const client = getOpenRouterClient();
+  const client = getOpenAiClient();
   if (!client) return buildFallbackResponse(params);
 
   try {
@@ -582,7 +586,7 @@ export async function generateAssistantResponse(params: {
     });
 
     const response = await client.chat.completions.create({
-      model: getLLMModel(),
+      model: getLlmBaseModel(),
       messages,
     });
 
@@ -638,7 +642,7 @@ export async function generateParallelResponse(params: {
     return buildParallelFallbackResponse([], errors);
   }
 
-  const client = getOpenRouterClient();
+  const client = getOpenAiClient();
   if (!client) {
     return buildParallelFallbackResponse(params.toolResults, errors);
   }
@@ -701,7 +705,7 @@ export async function generateParallelResponse(params: {
     });
 
     const response = await client.chat.completions.create({
-      model: getLLMModel(),
+      model: getLlmBaseModel(),
       messages,
     });
 
@@ -732,7 +736,7 @@ export async function generateRiskAssessment(params: {
   newsData: NewsData;
 }): Promise<RiskAssessmentData> {
   const { ticker, currentPrice, normalizedScores, financialData, technicalData, newsData } = params;
-  const client = getOpenRouterClient();
+  const client = getOpenAiClient();
 
   // Fallback if no LLM
   const fallback: RiskAssessmentData = {
@@ -803,7 +807,7 @@ export async function generateRiskAssessment(params: {
     ].join('\n');
 
     const response = await client.chat.completions.create({
-      model: getLLMModel(),
+      model: getLlmBaseModel(),
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
@@ -825,11 +829,11 @@ export async function generateRiskAssessment(params: {
  * Simple LLM call for text generation
  */
 export async function callLLM(params: { messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>; temperature?: number }): Promise<{ content: string }> {
-  const client = getOpenRouterClient();
-  if (!client) throw new Error('OpenRouter client not available');
+  const client = getOpenAiClient();
+  if (!client) throw new Error('LLM client not available');
 
   const response = await client.chat.completions.create({
-    model: getLLMModel(),
+    model: getLlmBaseModel(),
     messages: params.messages,
     temperature: params.temperature || 0.7,
   });
@@ -855,7 +859,7 @@ export async function generateInvestmentDecision(params: {
   newsData: NewsData;
 }): Promise<DecisionData> {
   const { ticker, currentPrice, normalizedScores, riskAssessment, financialData, technicalData, newsData } = params;
-  const client = getOpenRouterClient();
+  const client = getOpenAiClient();
 
   const fallback: DecisionData = {
     ticker,
@@ -929,7 +933,7 @@ export async function generateInvestmentDecision(params: {
     ].join('\n');
 
     const response = await client.chat.completions.create({
-      model: getLLMModel(),
+      model: getLlmBaseModel(),
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
