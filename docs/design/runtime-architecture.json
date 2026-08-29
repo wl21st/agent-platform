@@ -1,0 +1,245 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Multi-Agent Platform — Runtime Architecture",
+    "quality_profile": "showcase",
+    "viewBox": [1100, 460],
+    "views": [
+      {
+        "id": "primary-execution",
+        "label": "Primary execution path",
+        "focus": ["browser_client", "api_layer", "orchestrator", "agent_workers", "market_weather_apis"],
+        "note": "Follow user chat requests from the UI through intent dispatch and live API tools."
+      },
+      {
+        "id": "llm-and-memory",
+        "label": "LLM & session memory",
+        "focus": ["orchestrator", "session_store", "llm_gateway", "llm_provider"],
+        "note": "Inspect LLM intent parsing, prompt synthesis, and in-memory session persistence."
+      },
+      {
+        "id": "scraping-and-tools",
+        "label": "Scraping & web tools",
+        "focus": ["agent_workers", "scraper_engine", "target_websites"],
+        "note": "See headless browser extraction for webpage summarization and product safety."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "browser_client",
+      "type": "frontend",
+      "label": "Web UI Client",
+      "sublabel": "React 19 / Next.js",
+      "tag": "Chat & Jobs UI",
+      "brand": "react",
+      "pos": [36, 215],
+      "size": [124, 58]
+    },
+    {
+      "id": "api_layer",
+      "type": "backend",
+      "label": "API Route Handler",
+      "sublabel": "/api/chat (NDJSON)",
+      "tag": "App Router / Fastify",
+      "pos": [250, 215],
+      "size": [128, 58]
+    },
+    {
+      "id": "orchestrator",
+      "type": "backend",
+      "label": "Agent Orchestrator",
+      "sublabel": "LangGraph & Router",
+      "tag": "Parallel / State Flow",
+      "pos": [470, 215],
+      "size": [132, 58]
+    },
+    {
+      "id": "session_store",
+      "type": "database",
+      "label": "Session Store",
+      "sublabel": "In-Memory State Map",
+      "tag": "History & Prefs",
+      "pos": [470, 75],
+      "size": [132, 58]
+    },
+    {
+      "id": "llm_gateway",
+      "type": "backend",
+      "label": "LLM Service Gateway",
+      "sublabel": "OpenAI SDK Client",
+      "tag": "Intent & Synthesis",
+      "pos": [696, 75],
+      "size": [134, 58]
+    },
+    {
+      "id": "agent_workers",
+      "type": "backend",
+      "label": "Specialized Agents",
+      "sublabel": "Weather, Stock, News",
+      "tag": "Parallel Worker Pool",
+      "pos": [696, 215],
+      "size": [134, 58]
+    },
+    {
+      "id": "scraper_engine",
+      "type": "backend",
+      "label": "Headless Scraper",
+      "sublabel": "Puppeteer & Parser",
+      "tag": "Web & Ingredients",
+      "pos": [696, 355],
+      "size": [134, 58]
+    },
+    {
+      "id": "llm_provider",
+      "type": "external",
+      "label": "LLM Provider",
+      "sublabel": "OpenRouter / OpenAI",
+      "tag": "GPT-4.1-mini",
+      "brand": "openai",
+      "pos": [928, 75],
+      "size": [134, 58]
+    },
+    {
+      "id": "market_weather_apis",
+      "type": "external",
+      "label": "Live Data APIs",
+      "sublabel": "WeatherAPI, Yahoo, Exa",
+      "tag": "REST & SDK Services",
+      "pos": [928, 215],
+      "size": [134, 58]
+    },
+    {
+      "id": "target_websites",
+      "type": "external",
+      "label": "Target Websites",
+      "sublabel": "Public URLs & Products",
+      "tag": "Web Pages & Catalogs",
+      "pos": [928, 355],
+      "size": [134, 58]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "Client Zone (Browser)",
+      "wraps": ["browser_client"]
+    },
+    {
+      "kind": "region",
+      "label": "Node.js Server Runtime (Next.js & LangGraph Engine)",
+      "wraps": ["api_layer", "orchestrator", "session_store", "llm_gateway", "agent_workers", "scraper_engine"],
+      "pad": 16
+    },
+    {
+      "kind": "security-group",
+      "label": "Agent Execution Core",
+      "wraps": ["orchestrator", "session_store", "llm_gateway", "agent_workers", "scraper_engine"],
+      "pad": 10
+    },
+    {
+      "kind": "region",
+      "label": "External Cloud & Third-Party Services",
+      "wraps": ["llm_provider", "market_weather_apis", "target_websites"],
+      "pad": 16
+    }
+  ],
+  "connections": [
+    {
+      "id": "user-request",
+      "from": "browser_client",
+      "to": "api_layer",
+      "label": "POST /api/chat",
+      "variant": "emphasis"
+    },
+    {
+      "id": "stream-dispatch",
+      "from": "api_layer",
+      "to": "orchestrator",
+      "label": "stream session",
+      "variant": "emphasis"
+    },
+    {
+      "id": "session-sync",
+      "from": "orchestrator",
+      "to": "session_store",
+      "label": "state sync",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "llm-classify",
+      "from": "orchestrator",
+      "to": "llm_gateway",
+      "label": "classify intent",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDy": -18
+    },
+    {
+      "id": "llm-inference",
+      "from": "llm_gateway",
+      "to": "llm_provider",
+      "label": "OpenRouter API",
+      "variant": "emphasis"
+    },
+    {
+      "id": "agent-dispatch",
+      "from": "orchestrator",
+      "to": "agent_workers",
+      "label": "dispatch tasks",
+      "variant": "emphasis",
+      "labelDy": 18
+    },
+    {
+      "id": "data-query",
+      "from": "agent_workers",
+      "to": "market_weather_apis",
+      "label": "REST / SDK",
+      "variant": "emphasis"
+    },
+    {
+      "id": "scrape-task",
+      "from": "agent_workers",
+      "to": "scraper_engine",
+      "label": "scrape jobs",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [763, 314]
+    },
+    {
+      "id": "web-fetch",
+      "from": "scraper_engine",
+      "to": "target_websites",
+      "label": "HTTP / DOM"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Runtime Flow & Streaming",
+      "items": [
+        "Browser posts to /api/chat with sessionId, receiving live NDJSON stream",
+        "Orchestrator yields task events in completion order and synthesizes Markdown"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Agent Pool & Tools",
+      "items": [
+        "Specialized agents (Weather, Stock, News, Cosmetic) execute in parallel via Promise.all",
+        "Puppeteer extracts live webpage content; external SDKs fetch market/weather data"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "State & Security Boundaries",
+      "items": [
+        "Global in-memory session store persists turns and extracted preferences",
+        "Server runtime encapsulates API keys and dispatches outbound-only network requests"
+      ]
+    }
+  ]
+}
