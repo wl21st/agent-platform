@@ -32,6 +32,17 @@ test('withTimeoutSignal forwards caller cancellation and cleans up', async () =>
   composed.cleanup();
 });
 
+test('withTimeoutSignal and abortableDelay immediately abort with pre-aborted signal', async () => {
+  const preAborted = new AbortController();
+  preAborted.abort();
+
+  const composed = withTimeoutSignal(preAborted.signal, 10_000);
+  assert.equal(composed.signal.aborted, true);
+  composed.cleanup();
+
+  await assert.rejects(abortableDelay(10_000, preAborted.signal), (error: unknown) => isAbortError(error, preAborted.signal));
+});
+
 test('cancelChatState preserves partial content and cancels active tasks', () => {
   const state = cancelChatState(
     [

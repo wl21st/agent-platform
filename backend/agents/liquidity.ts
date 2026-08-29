@@ -1,5 +1,5 @@
 import YahooFinance from 'yahoo-finance2';
-import { abortableDelay, throwIfAborted } from '@/lib/cancellation';
+import { abortableDelay, isAbortError, throwIfAborted } from '@/lib/cancellation';
 
 const yahooFinance = new YahooFinance();
 
@@ -533,6 +533,9 @@ async function fetchLiquidityBatch(tickers: string[], signal?: AbortSignal): Pro
       lastError = undefined;
       break;
     } catch (error) {
+      if (isAbortError(error, signal)) {
+        throw error;
+      }
       lastError = error;
       if (!isRateLimitError(error) || attempt === STOCK_METRICS_BATCH_MAX_RETRIES) {
         break;
@@ -545,6 +548,9 @@ async function fetchLiquidityBatch(tickers: string[], signal?: AbortSignal): Pro
   }
 
   if (lastError) {
+    if (isAbortError(lastError, signal)) {
+      throw lastError;
+    }
     console.error(`[liquidity] Batch fetch failed for ${tickers.length} tickers:`, lastError);
     for (const ticker of tickers) {
       results.set(ticker, createDataFetchErrorResult(ticker));

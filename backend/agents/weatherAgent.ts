@@ -2,7 +2,6 @@ import {
   WEATHER_AGENT,
   type AgentSummary,
   type UserPreferences,
-  type WeatherContext,
 } from '@/lib/agent-chat';
 import { withTimeoutSignal } from '@/lib/cancellation';
 
@@ -83,10 +82,9 @@ export async function runWeatherAgent(context: ToolExecutionContext): Promise<To
   }
 
   const timeoutSignal = withTimeoutSignal(context.signal, 15_000);
-  let response: Response;
   let data: WeatherApiResponse;
   try {
-    response = await fetch(weatherUrl, {
+    const response = await fetch(weatherUrl, {
       method: 'GET',
       headers: {
         Accept: 'application/json',
@@ -94,17 +92,18 @@ export async function runWeatherAgent(context: ToolExecutionContext): Promise<To
       cache: 'no-store',
       signal: timeoutSignal.signal,
     });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error(`Could not find weather data for "${location}".`);
+      }
+
+      throw new Error(`WeatherAPI request failed with status ${response.status}.`);
+    }
+
     data = (await response.json()) as WeatherApiResponse;
   } finally {
     timeoutSignal.cleanup();
-  }
-
-  if (!response.ok) {
-    if (response.status === 404) {
-      throw new Error(`Could not find weather data for "${location}".`);
-    }
-
-    throw new Error(`WeatherAPI request failed with status ${response.status}.`);
   }
 
   const condition = data.current?.condition?.text || 'Unknown';

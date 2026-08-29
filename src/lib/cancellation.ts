@@ -1,3 +1,5 @@
+import type { ChatMessage, TaskStatus } from './agent-chat';
+
 /** Return true when an error represents cancellation rather than a failure. */
 export function isAbortError(error: unknown, signal?: AbortSignal): boolean {
   if (signal?.aborted) {
@@ -31,7 +33,7 @@ export function throwIfAborted(signal?: AbortSignal): void {
 }
 
 /** Sleep without keeping an aborted workflow alive until the next timer fires. */
-export function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+export async function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
   if (!signal) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
   }
@@ -76,11 +78,8 @@ export function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMillis
   const abort = () => controller.abort(signal?.reason);
   if (signal?.aborted) {
     abort();
-  } else {
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) {
-      abort();
-    }
+  } else if (signal) {
+    signal.addEventListener('abort', abort, { once: true });
   }
 
   const cleanup = () => {
@@ -108,4 +107,3 @@ export function cancelChatState(
     )),
   };
 }
-import type { ChatMessage, TaskStatus } from './agent-chat';

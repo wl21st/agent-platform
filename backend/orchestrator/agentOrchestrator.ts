@@ -163,6 +163,8 @@ function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T>
     return promise;
   }
 
+  throwIfAborted(signal);
+
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void) => {
@@ -180,6 +182,11 @@ function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T>
     };
 
     signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+
     promise.then(
       (value) => finish(() => resolve(value)),
       (error) => finish(() => reject(error)),
