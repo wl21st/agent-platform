@@ -3,7 +3,6 @@ import { createServer } from 'node:http';
 import { after, before, test } from 'node:test';
 
 const originalApiKey = process.env.LLM_API_KEY;
-const originalApiUrl = process.env.LLM_API_URL;
 const originalApiBaseUrl = process.env.LLM_API_BASE_URL;
 const originalModel = process.env.LLM_BASE_MODEL;
 
@@ -20,6 +19,11 @@ before(async () => {
       authorization: request.headers.authorization,
       model: payload.model,
     });
+
+    if (requests.length === 3) {
+      setTimeout(() => response.end(JSON.stringify({ choices: [{ message: { content: 'late response' } }] })), 500);
+      return;
+    }
 
     response.setHeader('content-type', 'application/json');
     response.end(JSON.stringify({
@@ -43,7 +47,6 @@ before(async () => {
   });
 
   process.env.LLM_API_KEY = 'test-api-key';
-  delete process.env.LLM_API_URL;
   process.env.LLM_API_BASE_URL = serverUrl;
   process.env.LLM_BASE_MODEL = 'test-model';
 });
@@ -53,8 +56,6 @@ after(async () => {
 
   if (originalApiKey === undefined) delete process.env.LLM_API_KEY;
   else process.env.LLM_API_KEY = originalApiKey;
-  if (originalApiUrl === undefined) delete process.env.LLM_API_URL;
-  else process.env.LLM_API_URL = originalApiUrl;
   if (originalApiBaseUrl === undefined) delete process.env.LLM_API_BASE_URL;
   else process.env.LLM_API_BASE_URL = originalApiBaseUrl;
   if (originalModel === undefined) delete process.env.LLM_BASE_MODEL;
@@ -74,4 +75,20 @@ test('LLM calls use the configured API key, base URL, and model', async () => {
     { authorization: 'Bearer test-api-key', model: 'test-model' },
     { authorization: 'Bearer test-api-key', model: 'test-model' },
   ]);
+});
+
+test('LLM response generation rethrows an intentional abort', async () => {
+  const { generateAssistantResponse } = await import('./openai');
+  const controller = new AbortController();
+  const preferences = { recentSearchTopics: [] };
+  const pending = generateAssistantResponse({
+    input: 'hello',
+    toolResult: null,
+    history: [],
+    preferences,
+    signal: controller.signal,
+  });
+
+  setTimeout(() => controller.abort(), 20);
+  await assert.rejects(pending, (error: unknown) => controller.signal.aborted && error instanceof Error);
 });

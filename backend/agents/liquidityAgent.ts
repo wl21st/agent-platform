@@ -1,5 +1,6 @@
 import { LIQUIDITY_AGENT } from '@/lib/agent-chat';
 import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/toolAgents';
+import { isAbortError, throwIfAborted } from '@/lib/cancellation';
 import {
   getDefaultMaxTickersForUniverse,
   getStocksLiquidityMetrics,
@@ -10,7 +11,9 @@ export async function runLiquidityAgent(context: ToolExecutionContext): Promise<
   const { input } = context;
 
   try {
-    const universe = await resolveLiquidityUniverseFromInput(input);
+    throwIfAborted(context.signal);
+    const universe = await resolveLiquidityUniverseFromInput(input, context.signal);
+    throwIfAborted(context.signal);
     // Broad universes (full NASDAQ / NYSE / us-listed) need a higher cap than
     // the default 500 so we don't silently truncate a "scan Nasdaq" request
     // to the first 500 alphabetical symbols.
@@ -21,7 +24,9 @@ export async function runLiquidityAgent(context: ToolExecutionContext): Promise<
       logProgress: true,
       logLabel: universe.label,
       maxTickers,
+      signal: context.signal,
     });
+    throwIfAborted(context.signal);
 
     const passedResults = allResults.filter((result) => result.status === 'passed');
     const fetchStats = allResults.fetchStats;
@@ -54,6 +59,9 @@ export async function runLiquidityAgent(context: ToolExecutionContext): Promise<
       },
     };
   } catch (error) {
+    if (isAbortError(error, context.signal)) {
+      throw error;
+    }
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error('[liquidityAgent] Error:', errMsg);
 

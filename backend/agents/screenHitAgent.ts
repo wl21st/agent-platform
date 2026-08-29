@@ -1,9 +1,11 @@
 import { SCREEN_HIT_AGENT } from '@/lib/agent-chat';
 import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/toolAgents';
 import { screenTrend, screenPullback, screenMomentum, screenSetups, type ScreenHit } from './screening';
+import { isAbortError, throwIfAborted } from '@/lib/cancellation';
 
 export async function runScreenHitAgent(context: ToolExecutionContext): Promise<ToolExecutionResult> {
   const { input } = context;
+  throwIfAborted(context.signal);
 
   // Parse input for setup type and tickers
   // Expected formats: "trend AAPL MSFT NVDA" or "Screen for pullback: AAPL, MSFT"
@@ -72,17 +74,17 @@ export async function runScreenHitAgent(context: ToolExecutionContext): Promise<
     let results: ScreenHit[] = [];
     switch (setupType) {
       case 'all': {
-        results = await screenSetups(tickers, ['trend', 'pullback', 'momentum']);
+        results = await screenSetups(tickers, ['trend', 'pullback', 'momentum'], context.signal);
         break;
       }
       case 'trend':
-        results = await screenTrend(tickers);
+        results = await screenTrend(tickers, context.signal);
         break;
       case 'pullback':
-        results = await screenPullback(tickers);
+        results = await screenPullback(tickers, context.signal);
         break;
       case 'momentum':
-        results = await screenMomentum(tickers);
+        results = await screenMomentum(tickers, context.signal);
         break;
     }
 
@@ -109,6 +111,9 @@ export async function runScreenHitAgent(context: ToolExecutionContext): Promise<
       },
     };
   } catch (error) {
+    if (isAbortError(error, context.signal)) {
+      throw error;
+    }
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error('[screenHitAgent] Error:', errMsg);
 

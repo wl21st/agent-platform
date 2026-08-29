@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { cancelChatState, isAbortError } from '@/lib/cancellation';
 
 import {
   ORCHESTRATOR_AGENT,
@@ -100,9 +101,17 @@ function getTaskClasses(status: TaskStatus['status']) {
       return 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-200';
     case 'failed':
       return 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-200';
+    case 'cancelled':
+      return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-950 dark:text-yellow-200';
     default:
       return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
   }
+}
+
+interface ActiveRequest {
+  id: string;
+  controller: AbortController;
+  assistantMessageId: string;
 }
 
 export default function ChatInterface() {
@@ -117,6 +126,7 @@ export default function ChatInterface() {
   const isNearBottomRef = useRef(true);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const activeRequestRef = useRef<ActiveRequest | null>(null);
 
   const scrollToBottom = useCallback(() => {
     requestAnimationFrame(() => {
@@ -169,14 +179,32 @@ export default function ChatInterface() {
     window.localStorage.setItem('agents-platform-session-id', nextSessionId);
   }, []);
 
+  const invalidateActiveRequest = useCallback((preservePartialResponse: boolean) => {
+    const activeRequest = activeRequestRef.current;
+    if (!activeRequest) {
+      return;
+    }
+
+    activeRequestRef.current = null;
+    activeRequest.controller.abort();
+
+    if (preservePartialResponse) {
+      setMessages((current) => cancelChatState(current, [], activeRequest.assistantMessageId).messages);
+      setTasks((current) => cancelChatState([], current, activeRequest.assistantMessageId).tasks);
+      setIsStreaming(false);
+    }
+  }, []);
+
   const resetConversation = useCallback((nextSessionId?: string) => {
+    invalidateActiveRequest(false);
+    setIsStreaming(false);
     const session = nextSessionId || createSessionId();
     persistSession(session);
     setMessages(createInitialMessages());
     setTasks([]);
     setInputValue('');
     setConnectionError(null);
-  }, [persistSession]);
+  }, [invalidateActiveRequest, persistSession]);
 
   const handleReloadHistory = useCallback(() => {
     if (!sessionId) {
@@ -189,12 +217,13 @@ export default function ChatInterface() {
   }, [loadSession, sessionId]);
 
   const handleClearHistory = useCallback(async () => {
+    invalidateActiveRequest(false);
     if (sessionId) {
       await fetch(`/api/session/${sessionId}`, { method: 'DELETE' });
     }
 
     resetConversation();
-  }, [resetConversation, sessionId]);
+  }, [invalidateActiveRequest, resetConversation, sessionId]);
 
   const handleStartNewConversation = useCallback(() => {
     resetConversation();
@@ -205,7 +234,12 @@ export default function ChatInterface() {
     [tasks]
   );
 
-  const handleStreamEvent = useCallback((event: StreamEvent, assistantMessageId: string) => {
+  const handleStreamEvent = useCallback((event: StreamEvent, request: ActiveRequest) => {
+    if (activeRequestRef.current?.id !== request.id) {
+      return;
+    }
+
+    const assistantMessageId = request.assistantMessageId;
     if (event.type === 'session') {
       persistSession(event.sessionId);
       return;
@@ -292,6 +326,10 @@ export default function ChatInterface() {
     );
   }, [persistSession]);
 
+  const handleStop = useCallback(() => {
+    invalidateActiveRequest(true);
+  }, [invalidateActiveRequest]);
+
   const handleSendMessage = useCallback(async () => {
     const trimmed = inputValue.trim();
 
@@ -331,12 +369,20 @@ export default function ChatInterface() {
       },
     ]);
 
+    const activeRequest: ActiveRequest = {
+      id: createId('request'),
+      controller: new AbortController(),
+      assistantMessageId,
+    };
+    activeRequestRef.current = activeRequest;
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        signal: activeRequest.controller.signal,
         body: JSON.stringify({
           sessionId,
           message: trimmed,
@@ -367,15 +413,25 @@ export default function ChatInterface() {
           }
 
           const event = JSON.parse(line) as StreamEvent;
-          handleStreamEvent(event, assistantMessageId);
+          handleStreamEvent(event, activeRequest);
         }
       }
 
       if (buffer.trim()) {
         const event = JSON.parse(buffer) as StreamEvent;
-        handleStreamEvent(event, assistantMessageId);
+        handleStreamEvent(event, activeRequest);
       }
     } catch (error) {
+      if (isAbortError(error, activeRequest.controller.signal)) {
+        if (activeRequestRef.current?.id === activeRequest.id) {
+          invalidateActiveRequest(true);
+        }
+        return;
+      }
+
+      if (activeRequestRef.current?.id !== activeRequest.id) {
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Unexpected request failure.';
       setConnectionError(message);
       setTasks([
@@ -398,9 +454,20 @@ export default function ChatInterface() {
         )
       );
     } finally {
-      setIsStreaming(false);
+      if (activeRequestRef.current?.id === activeRequest.id) {
+        activeRequestRef.current = null;
+        setIsStreaming(false);
+      }
     }
-  }, [handleStreamEvent, inputValue, isStreaming, sessionId]);
+  }, [handleStreamEvent, inputValue, invalidateActiveRequest, isStreaming, sessionId]);
+
+  useEffect(() => () => {
+    const activeRequest = activeRequestRef.current;
+    if (activeRequest) {
+      activeRequestRef.current = null;
+      activeRequest.controller.abort();
+    }
+  }, []);
 
   return (
     <div className="flex flex-1 flex-col bg-white dark:bg-gray-900">
@@ -614,6 +681,16 @@ export default function ChatInterface() {
               >
                 {isStreaming ? 'Working...' : 'Send'}
               </button>
+              {isStreaming && (
+                <button
+                  onClick={handleStop}
+                  className="rounded-full bg-red-500 px-4 py-2 text-white hover:bg-red-600"
+                  type="button"
+                  aria-label="Stop generating response"
+                >
+                  Stop
+                </button>
+              )}
             </div>
           </div>
         </div>

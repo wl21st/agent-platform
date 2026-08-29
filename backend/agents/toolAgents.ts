@@ -33,6 +33,7 @@ export type ToolRoute = 'weather' | 'search' | 'webpage-summarize' | 'cosmetic-s
 export interface ToolExecutionContext {
   input: string;
   preferences: UserPreferences;
+  signal?: AbortSignal;
   /** LLM-extracted location override (skips regex extraction when provided) */
   extractedLocation?: string;
   /** LLM-extracted timeframe override */

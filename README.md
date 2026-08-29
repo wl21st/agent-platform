@@ -204,7 +204,7 @@ cp .env.example .env.local
 Edit `.env.local` and add your API keys:
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
-WEATHERAPI_API_KEY=your_weather_api_key_here
+WEATHER_API_KEY=your_weather_api_key_here
 ```
 
 4. Run the development server:
@@ -273,7 +273,7 @@ bun dev
 ## API Keys
 
 - **OPENAI_API_KEY**: Required for LLM responses
-- **WEATHERAPI_API_KEY**: Required for weather agent functionality
+- **WEATHER_API_KEY**: Required for weather agent functionality
 
 ## Technologies Used
 

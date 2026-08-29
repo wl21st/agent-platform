@@ -1,6 +1,7 @@
 import puppeteer from 'puppeteer';
 
 import { COSMETIC_SAFE_CHECK_AGENT, INGREDIENTS_SCRAPE_AGENT } from '@/lib/agent-chat';
+import { abortableDelay, isAbortError, throwIfAborted, withTimeoutSignal } from '@/lib/cancellation';
 import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/toolAgents';
 import { extractUrl } from '@backend/agents/webpageSummarizeAgent';
 import { runCosmeticSafeCheckAgent } from '@backend/agents/cosmeticSafeCheckAgent';
@@ -191,7 +192,9 @@ function cleanIngredientText(raw: string): string {
  *   - Regex scan of raw HTML
  * ─────────────────────────────────────────────────────────────────────── */
 
-async function fetchHtml(url: string): Promise<string> {
+async function fetchHtml(url: string, signal?: AbortSignal): Promise<string> {
+  const timeoutSignal = withTimeoutSignal(signal, 20_000);
+  try {
   const response = await fetch(url, {
     method: 'GET',
     headers: {
@@ -201,14 +204,17 @@ async function fetchHtml(url: string): Promise<string> {
       'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
     },
     redirect: 'follow',
-    signal: AbortSignal.timeout(20_000),
+    signal: timeoutSignal.signal,
   });
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} ${response.statusText}`);
   }
 
-  return response.text();
+    return await response.text();
+  } finally {
+    timeoutSignal.cleanup();
+  }
 }
 
 /** Extract ingredient candidates from JSON-LD structured data */
@@ -390,10 +396,10 @@ function extractFromFullTextScan(html: string): Candidate[] {
 }
 
 /** Strategy 1: aggregate all HTTP-based extraction methods */
-async function scrapeViaHttp(url: string): Promise<Candidate[]> {
+async function scrapeViaHttp(url: string, signal?: AbortSignal): Promise<Candidate[]> {
   console.log('[IngredientsScrapeAgent] Strategy 1: HTTP fetch + HTML parsing for:', url);
 
-  const html = await fetchHtml(url);
+  const html = await fetchHtml(url, signal);
   console.log(`[IngredientsScrapeAgent] Fetched ${html.length} chars of HTML`);
 
   const allCandidates = [
@@ -415,11 +421,18 @@ async function scrapeViaHttp(url: string): Promise<Candidate[]> {
  * and extracts ingredient text from the live DOM.
  * ─────────────────────────────────────────────────────────────────────── */
 
-async function scrapeViaPuppeteer(url: string): Promise<Candidate[]> {
+async function scrapeViaPuppeteer(url: string, signal?: AbortSignal): Promise<Candidate[]> {
   console.log('[IngredientsScrapeAgent] Strategy 2: Puppeteer headless browser for:', url);
 
-  let browser = null;
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+  const closeBrowserOnAbort = () => {
+    if (browser) {
+      void browser.close().catch(() => undefined);
+    }
+  };
+  signal?.addEventListener('abort', closeBrowserOnAbort, { once: true });
   try {
+    throwIfAborted(signal);
     browser = await puppeteer.launch({
       headless: true,
       args: [
@@ -441,9 +454,10 @@ async function scrapeViaPuppeteer(url: string): Promise<Candidate[]> {
       waitUntil: 'domcontentloaded',
       timeout: 60_000,
     });
+    throwIfAborted(signal);
 
     // Wait for initial dynamic content
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await abortableDelay(3000, signal);
 
     // ── Scroll through the page to trigger lazy-loading ─────────────
     await page.evaluate(() => {
@@ -465,6 +479,7 @@ async function scrapeViaPuppeteer(url: string): Promise<Candidate[]> {
         }, 200);
       });
     });
+    throwIfAborted(signal);
 
     // ── Click ingredient-related expand/toggle buttons ────────────
     await page.evaluate(() => {
@@ -493,7 +508,8 @@ async function scrapeViaPuppeteer(url: string): Promise<Candidate[]> {
     });
 
     // Wait for expanded content
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await abortableDelay(2000, signal);
+    throwIfAborted(signal);
 
     // ── Collect candidates from the live DOM ─────────────────────
     const raw = await page.evaluate(() => {
@@ -568,6 +584,7 @@ async function scrapeViaPuppeteer(url: string): Promise<Candidate[]> {
 
     return deduplicateCandidates(candidates);
   } finally {
+    signal?.removeEventListener('abort', closeBrowserOnAbort);
     if (browser) {
       try { await browser.close(); } catch { /* ignore */ }
       console.log('[IngredientsScrapeAgent] Browser closed');
@@ -601,17 +618,19 @@ function deduplicateCandidates(candidates: Candidate[]): Candidate[] {
 
 const MIN_CONFIDENT_SCORE = 40;
 
-async function scrapeIngredients(url: string): Promise<{
+async function scrapeIngredients(url: string, signal?: AbortSignal): Promise<{
   ingredientText: string | null;
   candidates: Candidate[];
   strategy: string;
 }> {
-  let allCandidates: Candidate[] = [];
+  const allCandidates: Candidate[] = [];
   let strategy = 'none';
 
   // ── Strategy 1: HTTP fetch ──────────────────────────────────────────
   try {
-    const httpCandidates = await scrapeViaHttp(url);
+    throwIfAborted(signal);
+    const httpCandidates = await scrapeViaHttp(url, signal);
+    throwIfAborted(signal);
     allCandidates.push(...httpCandidates);
 
     console.log(`[IngredientsScrapeAgent] HTTP strategy found ${httpCandidates.length} candidates`);
@@ -629,13 +648,18 @@ async function scrapeIngredients(url: string): Promise<{
       };
     }
   } catch (httpError) {
+    if (isAbortError(httpError, signal)) {
+      throw httpError;
+    }
     const msg = httpError instanceof Error ? httpError.message : String(httpError);
     console.log(`[IngredientsScrapeAgent] HTTP strategy failed: ${msg}`);
   }
 
   // ── Strategy 2: Puppeteer fallback ──────────────────────────────────
   try {
-    const puppeteerCandidates = await scrapeViaPuppeteer(url);
+    throwIfAborted(signal);
+    const puppeteerCandidates = await scrapeViaPuppeteer(url, signal);
+    throwIfAborted(signal);
     allCandidates.push(...puppeteerCandidates);
 
     console.log(`[IngredientsScrapeAgent] Puppeteer strategy found ${puppeteerCandidates.length} candidates`);
@@ -643,6 +667,9 @@ async function scrapeIngredients(url: string): Promise<{
       console.log(`[IngredientsScrapeAgent] Best Puppeteer candidate score: ${puppeteerCandidates[0].score} (source: ${puppeteerCandidates[0].source})`);
     }
   } catch (puppeteerError) {
+    if (isAbortError(puppeteerError, signal)) {
+      throw puppeteerError;
+    }
     const msg = puppeteerError instanceof Error ? puppeteerError.message : String(puppeteerError);
     console.log(`[IngredientsScrapeAgent] Puppeteer strategy failed: ${msg}`);
   }
@@ -691,6 +718,7 @@ export interface IngredientScrapeOnlyResult {
 export async function scrapeIngredientsOnly(
   context: ToolExecutionContext,
 ): Promise<IngredientScrapeOnlyResult> {
+  throwIfAborted(context.signal);
   const url = extractUrl(context.input, context.extractedUrl);
 
   if (!url) {
@@ -715,7 +743,8 @@ export async function scrapeIngredientsOnly(
   }
 
   try {
-    const { ingredientText, candidates, strategy } = await scrapeIngredients(url);
+    const { ingredientText, candidates, strategy } = await scrapeIngredients(url, context.signal);
+    throwIfAborted(context.signal);
     console.log(`[IngredientsScrapeAgent] Final strategy: ${strategy}, found: ${!!ingredientText}`);
 
     if (!ingredientText) {
@@ -795,6 +824,9 @@ export async function scrapeIngredientsOnly(
       },
     };
   } catch (error) {
+    if (isAbortError(error, context.signal)) {
+      throw error;
+    }
     const message = error instanceof Error ? error.message : String(error);
     console.error('[IngredientsScrapeAgent] Error:', message);
 

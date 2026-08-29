@@ -1,6 +1,7 @@
 import { runWebpageSummarizeAgent } from '@backend/agents/webpageSummarizeAgent';
 import { NEWS_SUMMARY_AGENT } from '@/lib/agent-chat';
 import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/toolAgents';
+import { isAbortError, throwIfAborted } from '@/lib/cancellation';
 
 /* ──────────────────────────────────────────────────────────────────────────────
  * Types for news analysis
@@ -17,11 +18,13 @@ interface NewsItem {
  * Summarize individual news article with sentiment
  * ─────────────────────────────────────────────────────────────────────────── */
 
-async function summarizeNewsArticle(url: string, title: string): Promise<{summary: string, sentiment: 'bullish' | 'bearish' | 'neutral'}> {
+async function summarizeNewsArticle(url: string, title: string, signal?: AbortSignal): Promise<{summary: string, sentiment: 'bullish' | 'bearish' | 'neutral'}> {
   try {
+    throwIfAborted(signal);
     const result = await runWebpageSummarizeAgent({
       input: `Please summarize this news article in 2-3 sentences and analyze the sentiment impact on the stock/company mentioned: ${url}`,
       preferences: { recentSearchTopics: [] },
+      signal,
     });
 
     // Extract summary and sentiment from the webpage summary
@@ -47,6 +50,9 @@ async function summarizeNewsArticle(url: string, title: string): Promise<{summar
 
     return { summary, sentiment };
   } catch (error) {
+    if (isAbortError(error, signal)) {
+      throw error;
+    }
     console.error(`Failed to summarize ${url}:`, error);
     return {
       summary: `Failed to summarize article: ${title}`,
@@ -233,7 +239,8 @@ export async function runNewsSummaryAgent(context: ToolExecutionContext): Promis
     // Summarize each news article with sentiment
     const newsItems: NewsItem[] = [];
     for (const { url, title } of newsUrls.slice(0, 5)) { // Limit to 5 articles
-      const { summary, sentiment } = await summarizeNewsArticle(url, title);
+      throwIfAborted(context.signal);
+      const { summary, sentiment } = await summarizeNewsArticle(url, title, context.signal);
       newsItems.push({ url, title, summary, sentiment });
     }
 
@@ -255,6 +262,9 @@ export async function runNewsSummaryAgent(context: ToolExecutionContext): Promis
       },
     };
   } catch (error) {
+    if (isAbortError(error, context.signal)) {
+      throw error;
+    }
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error('[newsSummaryAgent] Failed to summarize news:', errMsg);
 

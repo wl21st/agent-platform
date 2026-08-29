@@ -1,4 +1,5 @@
 import YahooFinance from 'yahoo-finance2';
+import { abortableDelay, throwIfAborted } from '@/lib/cancellation';
 
 const yahooFinance = new YahooFinance();
 
@@ -73,6 +74,7 @@ export type StockMetricsScanOptions = {
   maxTickers?: number;
   logProgress?: boolean;
   logLabel?: string;
+  signal?: AbortSignal;
 };
 
 export type LiquidityUniverseKey = 'sp500' | 'nasdaq100' | 'nasdaq' | 'nyse' | 'us-listed' | 'default';
@@ -140,10 +142,6 @@ function chunkArray<T>(values: T[], size: number) {
   }
 
   return chunks;
-}
-
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function runWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T, index: number) => Promise<R>) {
@@ -238,11 +236,13 @@ function parsePipeDelimitedRows(text: string) {
   });
 }
 
-async function fetchText(url: string) {
+async function fetchText(url: string, signal?: AbortSignal) {
+  throwIfAborted(signal);
   const response = await fetch(url, {
     headers: {
       'user-agent': 'agentsplatform-liquidity-agent/1.0',
     },
+    signal,
   });
 
   if (!response.ok) {
@@ -275,9 +275,9 @@ function extractFirstColumnTickersFromHtmlTable(html: string) {
   );
 }
 
-async function fetchWikipediaConstituentTickers(key: WikipediaUniverseKey): Promise<LiquidityUniverse> {
+async function fetchWikipediaConstituentTickers(key: WikipediaUniverseKey, signal?: AbortSignal): Promise<LiquidityUniverse> {
   const config = WIKIPEDIA_CONSTITUENT_UNIVERSES[key];
-  const html = await fetchText(config.sourceUrl);
+  const html = await fetchText(config.sourceUrl, signal);
   const tickers = extractFirstColumnTickersFromHtmlTable(html);
 
   if (tickers.length === 0) {
@@ -293,8 +293,8 @@ async function fetchWikipediaConstituentTickers(key: WikipediaUniverseKey): Prom
   };
 }
 
-async function fetchNasdaqListedTickers() {
-  const text = await fetchText(NASDAQ_LISTED_URL);
+async function fetchNasdaqListedTickers(signal?: AbortSignal) {
+  const text = await fetchText(NASDAQ_LISTED_URL, signal);
   const rows = parsePipeDelimitedRows(text);
 
   return uniqueTickers(
@@ -305,8 +305,8 @@ async function fetchNasdaqListedTickers() {
   );
 }
 
-async function fetchOtherListedTickers(exchange: string) {
-  const text = await fetchText(OTHER_LISTED_URL);
+async function fetchOtherListedTickers(exchange: string, signal?: AbortSignal) {
+  const text = await fetchText(OTHER_LISTED_URL, signal);
   const rows = parsePipeDelimitedRows(text);
 
   return uniqueTickers(
@@ -317,14 +317,14 @@ async function fetchOtherListedTickers(exchange: string) {
   );
 }
 
-async function fetchNasdaqTraderUniverseTickers(key: NasdaqTraderUniverseKey): Promise<LiquidityUniverse> {
+async function fetchNasdaqTraderUniverseTickers(key: NasdaqTraderUniverseKey, signal?: AbortSignal): Promise<LiquidityUniverse> {
   if (key === 'nasdaq') {
     return {
       key,
       label: 'NASDAQ listed common stocks',
       source: 'nasdaq-trader-symbol-directory',
       sourceUrl: NASDAQ_LISTED_URL,
-      tickers: await fetchNasdaqListedTickers(),
+      tickers: await fetchNasdaqListedTickers(signal),
     };
   }
 
@@ -334,13 +334,13 @@ async function fetchNasdaqTraderUniverseTickers(key: NasdaqTraderUniverseKey): P
       label: 'NYSE listed common stocks',
       source: 'nasdaq-trader-symbol-directory',
       sourceUrl: OTHER_LISTED_URL,
-      tickers: await fetchOtherListedTickers('N'),
+      tickers: await fetchOtherListedTickers('N', signal),
     };
   }
 
   const [nasdaqTickers, nyseTickers] = await Promise.all([
-    fetchNasdaqListedTickers(),
-    fetchOtherListedTickers('N'),
+    fetchNasdaqListedTickers(signal),
+    fetchOtherListedTickers('N', signal),
   ]);
 
   return {
@@ -412,23 +412,29 @@ export function getDefaultMaxTickersForUniverse(key: LiquidityUniverseKey): numb
   return STOCK_METRICS_DEFAULT_MAX_TICKERS;
 }
 
-export async function fetchUniverseTickersFromYahooFinance(key: LiquidityUniverseKey): Promise<LiquidityUniverse> {
+export async function fetchUniverseTickersFromYahooFinance(key: LiquidityUniverseKey, signal?: AbortSignal): Promise<LiquidityUniverse> {
+  throwIfAborted(signal);
   if (key === 'nasdaq' || key === 'nyse' || key === 'us-listed') {
-    return fetchNasdaqTraderUniverseTickers(key);
+    return fetchNasdaqTraderUniverseTickers(key, signal);
   }
 
   try {
-    return await fetchWikipediaConstituentTickers(key);
+    return await fetchWikipediaConstituentTickers(key, signal);
   } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
     console.error(`Failed to fetch ${key} constituents from Wikipedia:`, error);
   }
 
   const config = YAHOO_HOLDINGS_UNIVERSES[key];
 
   try {
+    throwIfAborted(signal);
     const summary = await yahooFinance.quoteSummary(config.sourceSymbol, {
       modules: ['topHoldings'],
     });
+    throwIfAborted(signal);
 
     const holdings = summary.topHoldings?.holdings ?? [];
     const tickers = uniqueTickers(
@@ -447,6 +453,9 @@ export async function fetchUniverseTickersFromYahooFinance(key: LiquidityUnivers
       tickers,
     };
   } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
     if (key !== 'default') {
       throw error;
     }
@@ -460,10 +469,11 @@ export async function fetchUniverseTickersFromYahooFinance(key: LiquidityUnivers
   }
 }
 
-export async function resolveLiquidityUniverseFromInput(input: string): Promise<LiquidityUniverse> {
+export async function resolveLiquidityUniverseFromInput(input: string, signal?: AbortSignal): Promise<LiquidityUniverse> {
+  throwIfAborted(signal);
   const universeKey = resolveLiquidityUniverseKey(input);
   if (universeKey !== 'default') {
-    return fetchUniverseTickersFromYahooFinance(universeKey);
+    return fetchUniverseTickersFromYahooFinance(universeKey, signal);
   }
 
   const explicitTickers = extractTickersFromInput(input);
@@ -477,7 +487,7 @@ export async function resolveLiquidityUniverseFromInput(input: string): Promise<
     };
   }
 
-  return fetchUniverseTickersFromYahooFinance(universeKey);
+  return fetchUniverseTickersFromYahooFinance(universeKey, signal);
 }
 
 type YahooQuoteLike = {
@@ -495,7 +505,8 @@ type YahooQuoteLike = {
  * Returns a result for every ticker in the batch (passed/failed/error), keyed
  * by the normalized ticker. Retries the batch on transient 429s.
  */
-async function fetchLiquidityBatch(tickers: string[]): Promise<Map<string, LiquidityResult>> {
+async function fetchLiquidityBatch(tickers: string[], signal?: AbortSignal): Promise<Map<string, LiquidityResult>> {
+  throwIfAborted(signal);
   const results = new Map<string, LiquidityResult>();
 
   let quotes: YahooQuoteLike[] = [];
@@ -517,6 +528,7 @@ async function fetchLiquidityBatch(tickers: string[]): Promise<Map<string, Liqui
       }, {
         validateResult: false,
       });
+      throwIfAborted(signal);
       quotes = (response as unknown as YahooQuoteLike[]) ?? [];
       lastError = undefined;
       break;
@@ -528,7 +540,7 @@ async function fetchLiquidityBatch(tickers: string[]): Promise<Map<string, Liqui
 
       const backoffMs = STOCK_METRICS_BATCH_RETRY_BASE_DELAY_MS * (2 ** attempt);
       console.warn(`[liquidity] Batch rate-limited (size=${tickers.length}); retrying in ${Math.round(backoffMs / 1000)}s`);
-      await delay(backoffMs);
+      await abortableDelay(backoffMs, signal);
     }
   }
 
@@ -578,7 +590,8 @@ async function fetchLiquidityBatch(tickers: string[]): Promise<Map<string, Liqui
  * Kept for callers that only need one ticker; cache-aware so repeat calls in
  * a workflow don't re-hit Yahoo.
  */
-export async function getStockMetrics(ticker: string): Promise<LiquidityResult> {
+export async function getStockMetrics(ticker: string, signal?: AbortSignal): Promise<LiquidityResult> {
+  throwIfAborted(signal);
   const normalizedTicker = normalizeTicker(ticker);
   const cached = stockMetricsCache.get(normalizedTicker);
   const now = Date.now();
@@ -587,7 +600,7 @@ export async function getStockMetrics(ticker: string): Promise<LiquidityResult> 
     return cached.result;
   }
 
-  const batch = await fetchLiquidityBatch([normalizedTicker]);
+  const batch = await fetchLiquidityBatch([normalizedTicker], signal);
   const result = batch.get(normalizedTicker) ?? createMissingDataResult(normalizedTicker);
   stockMetricsCache.set(normalizedTicker, {
     result,
@@ -622,6 +635,7 @@ function logStockMetricsProgress(enabled: boolean, message: string) {
  *     Yahoo.
  */
 export async function getStocksLiquidityMetrics(tickers: string[], options: StockMetricsScanOptions = {}): Promise<LiquidityResults> {
+  throwIfAborted(options.signal);
   const startedAt = Date.now();
   const uniqueRequestedTickers = uniqueTickers(tickers);
   const maxTickers = options.maxTickers ?? STOCK_METRICS_DEFAULT_MAX_TICKERS;
@@ -636,6 +650,7 @@ export async function getStocksLiquidityMetrics(tickers: string[], options: Stoc
   const now = Date.now();
 
   for (const ticker of selectedTickers) {
+    throwIfAborted(options.signal);
     const cached = stockMetricsCache.get(ticker);
     if (cached && now - cached.fetchedAt < STOCK_METRICS_CACHE_TTL_MS) {
       resultsByTicker.set(ticker, cached.result);
@@ -656,15 +671,18 @@ export async function getStocksLiquidityMetrics(tickers: string[], options: Stoc
   // Step 2: fetch the misses in parallel batches, each one a single HTTP request.
   let errors = 0;
   await runWithConcurrency(batches, STOCK_METRICS_BATCH_CONCURRENCY, async (batch, batchIndex) => {
+    throwIfAborted(options.signal);
     logStockMetricsProgress(
       Boolean(options.logProgress),
       `${logPrefix}batch ${batchIndex + 1}/${batches.length} started (${batch.length} tickers)`,
     );
 
     const batchStart = Date.now();
-    const batchResults = await fetchLiquidityBatch(batch);
+    const batchResults = await fetchLiquidityBatch(batch, options.signal);
+    throwIfAborted(options.signal);
 
     for (const ticker of batch) {
+      throwIfAborted(options.signal);
       const result = batchResults.get(ticker) ?? createMissingDataResult(ticker);
       if (result.reasons.includes('data_fetch_error')) {
         errors += 1;

@@ -215,6 +215,7 @@ export async function runRiskAssessment(params: {
   newsData: NewsData;
   technicalData: TechnicalData;
   normalizedScores: NormalizedScores;
+  signal?: AbortSignal;
 }): Promise<{ riskData: RiskAssessmentData; markdown: string; agent: typeof RISK_ASSESSMENT_AGENT }> {
   const riskData = await generateRiskAssessment(params);
   const markdown = buildRiskReport(riskData, params.normalizedScores);
