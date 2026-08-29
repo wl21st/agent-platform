@@ -6,7 +6,40 @@ This document provides a comprehensive technical debt assessment of the **LLM Fr
 
 ---
 
-## 2. Architectural Overview & System Flow
+## 2. Actionable Implementation Tables
+
+### Phase 1: Stabilization & Bug Fixes (Immediate)
+
+| Status | ID | Severity | Category | Target Location | Problem Summary | Actionable Implementation Item |
+| :---: | :---: | :---: | :--- | :--- | :--- | :--- |
+| [ ] | **`TD-01`** | **High** | Streaming | [`ChatInterface.tsx:350-377`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx#L350-L377) | Unhandled `JSON.parse` crashes stream reader on malformed/split frames | Wrap per-line chunk parsing in `try/catch` with graceful error logging |
+| [ ] | **`TD-02`** | **High** | Streaming | [`ChatInterface.tsx:295-403`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx#L295-L403) | No cancellation mechanism for ongoing LLM inference | Pass `AbortController.signal` to `fetch('/api/chat')` & wire "Stop" UI button |
+| [ ] | **`TD-07`** | **High** | Schema | [`data/agents.ts`](file:///Users/sfuser/develop/work/agent-platform/src/app/data/agents.ts) / [`toolAgents.ts`](file:///Users/sfuser/develop/work/agent-platform/backend/agents/toolAgents.ts) | Ghost agents (`calculator`, etc.) and `'getweather'` ID mismatch | Establish SSOT agent registry; remove ghost agents and align IDs |
+| [ ] | **`TD-14`** | **Low** | Code Quality | [`AgentsList.tsx:5`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/AgentsList.tsx#L5) / [`ChatInterface.tsx:116`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx#L116) | Unused variables (`getRole`, `isNearBottom`) trigger ESLint warnings | Remove dead code and unused state variables to ensure clean lint builds |
+
+### Phase 2: Architecture, Modularity & State Management (Short-Term)
+
+| Status | ID | Severity | Category | Target Location | Problem Summary | Actionable Implementation Item |
+| :---: | :---: | :---: | :--- | :--- | :--- | :--- |
+| [ ] | **`TD-03`** | **Medium** | Streaming | [`ChatInterface.tsx:235-263`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx#L235-L263) | Positional splicing on `agent-done` causes UI flicker and race conditions | Transition to deterministic task/message IDs for concurrent subagent events |
+| [ ] | **`TD-04`** | **High** | Architecture | [`ChatInterface.tsx`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx) | 625-line God component couples streaming, scroll, session, UI | Extract `useChatStream`, `useAutoScroll`, `useSessionHistory`, and subcomponents |
+| [ ] | **`TD-05`** | **Medium** | Architecture | [`src/app/page.tsx:13-33`](file:///Users/sfuser/develop/work/agent-platform/src/app/page.tsx#L13-L33) | `useState<View>` breaks deep linking and browser back/forward buttons | Migrate to Next.js dynamic App Router routes (`/chat`, `/agents`, `/jobs`) |
+| [ ] | **`TD-06`** | **High** | Architecture | [`JobsInterface.tsx`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/JobsInterface.tsx) | 100% mock static jobs view disconnected from backend orchestrator | Connect interface to real backend task stream / background job API |
+| [ ] | **`TD-08`** | **Medium** | Schema | [`AgentDetails.tsx:11-30`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/AgentDetails.tsx#L11-L30) | `name.split(' ')[0]` heuristic breaks theme styles on multi-word agents | Replace with explicit `theme` or `color` tokens in agent metadata |
+| [ ] | **`TD-12`** | **Medium** | Memory | [`ChatInterface.tsx:158-170`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx#L158-L170) | Single global session key in `localStorage` orphans past chats | Build conversation history sidebar tracking session IDs, titles, and timestamps |
+
+### Phase 3: Generative UI, Performance & Testing (Medium-Term)
+
+| Status | ID | Severity | Category | Target Location | Problem Summary | Actionable Implementation Item |
+| :---: | :---: | :---: | :--- | :--- | :--- | :--- |
+| [ ] | **`TD-09`** | **High** | Generative UI | [`stockAnalysisInterfaces.ts`](file:///Users/sfuser/develop/work/agent-platform/src/lib/stockAnalysisInterfaces.ts) | Rich structured data contracts discarded in favor of raw markdown text | Build structured UI cards (`<DecisionCard>`, `<RiskGauge>`, `<CosmeticCard>`) |
+| [ ] | **`TD-10`** | **Medium** | Performance | [`ChatInterface.tsx:532-581`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx#L532-L581) | Full Markdown AST re-parsing on every streaming token causes CPU thrashing | Throttle/debounce markdown re-renders (e.g. 50ms interval) during active streams |
+| [ ] | **`TD-11`** | **Low** | UX | [`ChatInterface.tsx:543-551`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx#L543-L551) | Plain code blocks without syntax highlighting or copy-to-clipboard | Integrate Shiki/Prism syntax highlighter and interactive copy button |
+| [ ] | **`TD-13`** | **High** | QA | Repository-wide | Zero frontend unit, component, or E2E test coverage | Set up Vitest + React Testing Library + Playwright test suites |
+
+---
+
+## 3. Architectural Overview & System Flow
 
 ```mermaid
 flowchart TD
@@ -41,9 +74,9 @@ flowchart TD
 
 ---
 
-## 3. Deep-Dive Category Analysis
+## 4. Deep-Dive Category Analysis
 
-### 3.1 Streaming & Real-Time Protocol Debt
+### 4.1 Streaming & Real-Time Protocol Debt
 
 #### 1. Fragile Custom NDJSON Parser without Error Boundaries
 - **Location**: [`src/app/components/ChatInterface.tsx:350-377`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx#L350-L377)
@@ -62,7 +95,7 @@ flowchart TD
 
 ---
 
-### 3.2 Architectural & Component Design Debt
+### 4.2 Architectural & Component Design Debt
 
 #### 1. "God Component" Anti-Pattern in `ChatInterface`
 - **Location**: [`src/app/components/ChatInterface.tsx`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx) (625 lines)
@@ -88,7 +121,7 @@ flowchart TD
 
 ---
 
-### 3.3 Data Contract Drift & Agent Catalogue Inconsistency
+### 4.3 Data Contract Drift & Agent Catalogue Inconsistency
 
 #### 1. Ghost Agents & Catalogue Fragmentation
 - **Location**: [`src/app/data/agents.ts`](file:///Users/sfuser/develop/work/agent-platform/src/app/data/agents.ts) vs [`backend/agents/toolAgents.ts`](file:///Users/sfuser/develop/work/agent-platform/backend/agents/toolAgents.ts) vs [`src/lib/agent-chat.ts`](file:///Users/sfuser/develop/work/agent-platform/src/lib/agent-chat.ts)
@@ -104,7 +137,7 @@ flowchart TD
 
 ---
 
-### 3.4 Rich Domain Contracts vs. Raw Text Output Deficit
+### 4.4 Rich Domain Contracts vs. Raw Text Output Deficit
 
 #### 1. Underutilized Structured Domain Contracts
 - **Location**: [`src/lib/stockAnalysisInterfaces.ts`](file:///Users/sfuser/develop/work/agent-platform/src/lib/stockAnalysisInterfaces.ts)
@@ -117,7 +150,7 @@ flowchart TD
 
 ---
 
-### 3.5 UX & Rendering Performance Debt
+### 4.5 UX & Rendering Performance Debt
 
 #### 1. Markdown AST Re-parsing on Every Streamed Chunk
 - **Location**: [`src/app/components/ChatInterface.tsx:532-581`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx#L532-L581)
@@ -131,7 +164,7 @@ flowchart TD
 
 ---
 
-### 3.6 Session Management & Memory Persistence Debt
+### 4.6 Session Management & Memory Persistence Debt
 
 #### 1. Single-Session Lock-in & In-Memory Volatility
 - **Location**: [`src/app/components/ChatInterface.tsx:158-170`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx#L158-L170) and [`backend/memory/sessionStore.ts`](file:///Users/sfuser/develop/work/agent-platform/backend/memory/sessionStore.ts)
@@ -142,7 +175,7 @@ flowchart TD
 
 ---
 
-### 3.7 Quality Assurance, Testing & Linting Debt
+### 4.7 Quality Assurance, Testing & Linting Debt
 
 #### 1. Zero Frontend Testing Coverage
 - **Location**: Repository-wide
@@ -154,27 +187,6 @@ flowchart TD
   - [`src/app/components/AgentsList.tsx:5`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/AgentsList.tsx#L5) (`getRole` declared but never used)
   - [`src/app/components/ChatInterface.tsx:116`](file:///Users/sfuser/develop/work/agent-platform/src/app/components/ChatInterface.tsx#L116) (`isNearBottom` state assigned but not used in JSX)
 - **Remediation**: Clean up dead helper functions and state variables to achieve clean `npm run lint` builds.
-
----
-
-## 4. Comprehensive Technical Debt Matrix
-
-| ID | Area | Item | Severity | Impact | Recommended Action |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **TD-01** | Streaming | Unhandled NDJSON parsing | **High** | Stream crash on malformed chunk | Add chunk try/catch boundary |
-| **TD-02** | Streaming | No request cancellation | **High** | Wasted LLM tokens, hung streams | Integrate `AbortController` |
-| **TD-03** | Streaming | `agent-done` array splicing | **Medium** | UI flicker & dropped stream chunks | Use deterministic message/task IDs |
-| **TD-04** | Architecture | God component (`ChatInterface`) | **High** | High maintenance cost, hard to test | Extract custom hooks & subcomponents |
-| **TD-05** | Architecture | View state in `page.tsx` | **Medium** | No deep linking, broken back button | Migrate to Next.js App Router paths |
-| **TD-06** | Architecture | Mock `JobsInterface` | **High** | Dead UI misleading user | Wire to live backend task stream |
-| **TD-07** | Schema | Ghost agent catalogue drift | **High** | Broken agent IDs & false capabilities | Consolidate to shared SSOT registry |
-| **TD-08** | Schema | Brittle string role styling | **Medium** | Broken styles on multi-word agents | Move theme tokens into agent config |
-| **TD-09** | UI / UX | Unused domain contracts | **High** | Missing rich generative UI | Build structured cards (Stock/Risk) |
-| **TD-10** | Performance | Markdown AST re-parsing | **Medium** | CPU thrashing during streaming | Throttle/debounce render pipeline |
-| **TD-11** | UX | Raw code blocks | **Low** | Subpar developer readability | Add Shiki/Prism & copy button |
-| **TD-12** | Memory | Single-session local storage | **Medium** | Orphaned chats, no thread history | Add conversation history drawer |
-| **TD-13** | QA | Zero frontend tests | **High** | High regression risk | Add Vitest + RTL + Playwright |
-| **TD-14** | Code Quality | ESLint unused variables | **Low** | Lint failures in CI | Clean up dead state/functions |
 
 ---
 
