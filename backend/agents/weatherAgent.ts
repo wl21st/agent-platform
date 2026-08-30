@@ -94,6 +94,8 @@ export async function runWeatherAgent(context: ToolExecutionContext): Promise<To
     });
 
     if (!response.ok) {
+      await response.body?.cancel();
+
       if (response.status === 404) {
         throw new Error(`Could not find weather data for "${location}".`);
       }
