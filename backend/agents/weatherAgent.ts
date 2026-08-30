@@ -2,12 +2,13 @@ import {
   WEATHER_AGENT,
   type AgentSummary,
   type UserPreferences,
-  type WeatherContext,
 } from '@/lib/agent-chat';
+import { withTimeoutSignal } from '@/lib/cancellation';
 
 export type ToolExecutionContext = {
   input: string;
   preferences: UserPreferences;
+  signal?: AbortSignal;
   /** LLM-extracted location override (skips regex extraction when provided) */
   extractedLocation?: string;
   /** LLM-extracted timeframe override */
@@ -63,10 +64,10 @@ export async function runWeatherAgent(context: ToolExecutionContext): Promise<To
   const { preferences, extractedLocation, extractedTimeframe } = context;
   const location = extractedLocation || preferences.preferredWeatherLocation || 'San Francisco';
   const timeframe = extractedTimeframe || 'current';
-  const apiKey = process.env.WEATHERAPI_API_KEY;
+  const apiKey = process.env.WEATHER_API_KEY;
 
   if (!apiKey) {
-    throw new Error('Missing WEATHERAPI_API_KEY on the server.');
+    throw new Error('Missing WEATHER_API_KEY on the server.');
   }
 
   const weatherUrl = new URL(
@@ -80,23 +81,33 @@ export async function runWeatherAgent(context: ToolExecutionContext): Promise<To
     weatherUrl.searchParams.set('days', '2');
   }
 
-  const response = await fetch(weatherUrl, {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-    },
-    cache: 'no-store',
-  });
+  const timeoutSignal = withTimeoutSignal(context.signal, 15_000);
+  let data: WeatherApiResponse;
+  try {
+    const response = await fetch(weatherUrl, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+      cache: 'no-store',
+      signal: timeoutSignal.signal,
+    });
 
-  if (!response.ok) {
-    if (response.status === 404) {
-      throw new Error(`Could not find weather data for "${location}".`);
+    if (!response.ok) {
+      await response.body?.cancel();
+
+      if (response.status === 404) {
+        throw new Error(`Could not find weather data for "${location}".`);
+      }
+
+      throw new Error(`WeatherAPI request failed with status ${response.status}.`);
     }
 
-    throw new Error(`WeatherAPI request failed with status ${response.status}.`);
+    data = (await response.json()) as WeatherApiResponse;
+  } finally {
+    timeoutSignal.cleanup();
   }
 
-  const data = (await response.json()) as WeatherApiResponse;
   const condition = data.current?.condition?.text || 'Unknown';
   const temperature = data.current?.temp_f;
   const temperatureC = data.current?.temp_c;

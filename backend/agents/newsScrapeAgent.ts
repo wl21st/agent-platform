@@ -1,6 +1,7 @@
 import Exa from 'exa-js';
 
 import { NEWS_SCRAPE_AGENT } from '@/lib/agent-chat';
+import { isAbortError, throwIfAborted } from '@/lib/cancellation';
 import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/toolAgents';
 import { NewsData } from '@/lib/stockAnalysisInterfaces';
 
@@ -121,7 +122,8 @@ export function extractTickerSymbol(input: string, extractedTicker?: string): st
  * Search news using Exa API
  * ─────────────────────────────────────────────────────────────────────────── */
 
-async function searchStockNews(ticker: string): Promise<Array<{title: string, url: string, publishedDate: string}>> {
+async function searchStockNews(ticker: string, signal?: AbortSignal): Promise<Array<{title: string, url: string, publishedDate: string}>> {
+  throwIfAborted(signal);
   const today = new Date();
   const yesterday = new Date(today);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -148,6 +150,7 @@ async function searchStockNews(ticker: string): Promise<Array<{title: string, ur
     ],
     startPublishedDate: yesterday.toISOString().split('T')[0],
   });
+  throwIfAborted(signal);
 
   return result.results.map(item => ({
     title: item.title || 'No title',
@@ -219,7 +222,7 @@ export async function runNewsScrapeAgent(context: ToolExecutionContext): Promise
   }
 
   try {
-    const newsItems = await searchStockNews(ticker);
+    const newsItems = await searchStockNews(ticker, context.signal);
     const markdown = buildNewsTable(newsItems, ticker);
     
     // Build standardized news data
@@ -241,6 +244,9 @@ export async function runNewsScrapeAgent(context: ToolExecutionContext): Promise
       },
     };
   } catch (error) {
+    if (isAbortError(error, context.signal)) {
+      throw error;
+    }
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error(`[newsScrapeAgent] Failed to fetch news for ${ticker}:`, errMsg);
 

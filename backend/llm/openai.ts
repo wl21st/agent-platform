@@ -5,11 +5,12 @@ import {
   type ConversationTurn,
   type UserPreferences,
 } from '@/lib/agent-chat';
+import { isAbortError, throwIfAborted } from '@/lib/cancellation';
 import type { DecisionData, FinancialData, NewsData, NormalizedScores, RiskAssessmentData, TechnicalData } from '@/lib/stockAnalysisInterfaces';
 import type { ToolExecutionResult } from '@backend/agents/toolAgents';
 
 const DEFAULT_LLM_BASE_MODEL = 'openai/gpt-4.1-mini';
-const DEFAULT_LLM_API_URL = 'https://openrouter.ai/api/v1';
+const DEFAULT_LLM_API_BASE_URL = 'https://openrouter.ai/api/v1';
 
 let openAiClient: OpenAI | null | undefined;
 
@@ -17,8 +18,8 @@ function getLlmBaseModel() {
   return process.env.LLM_BASE_MODEL || DEFAULT_LLM_BASE_MODEL;
 }
 
-function getLlmApiUrl(): string {
-  return process.env.LLM_API_BASE_URL || process.env.LLM_API_URL || DEFAULT_LLM_API_URL;
+function getLlmApiBaseUrl(): string {
+  return process.env.LLM_API_BASE_URL || DEFAULT_LLM_API_BASE_URL;
 }
 
 function getOpenAiClient() {
@@ -29,12 +30,8 @@ function getOpenAiClient() {
   openAiClient = process.env.LLM_API_KEY
     ? new OpenAI({
         apiKey: process.env.LLM_API_KEY,
-        baseURL: getLlmApiUrl(),
-        defaultHeaders: {
-          'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'http://localhost:3000',
-          'X-Title': process.env.OPENROUTER_APP_NAME || 'Agents Platform',
-        },
-    })
+        baseURL: getLlmApiBaseUrl(),
+      })
     : null;
 
   return openAiClient;
@@ -277,7 +274,9 @@ export async function classifyUserIntent(params: {
   input: string;
   history: ConversationTurn[];
   preferences: UserPreferences;
+  signal?: AbortSignal;
 }): Promise<IntentClassification | null> {
+  throwIfAborted(params.signal);
   const client = getOpenAiClient();
   if (!client) return null;
 
@@ -291,7 +290,7 @@ export async function classifyUserIntent(params: {
     const response = await client.chat.completions.create({
       model: getLlmBaseModel(),
       messages,
-    });
+    }, { signal: params.signal });
 
     // Parse the JSON response (the system prompt instructs JSON-only output)
     const text = response.choices[0]?.message?.content?.trim() || '';
@@ -320,6 +319,9 @@ export async function classifyUserIntent(params: {
 
     return parsed;
   } catch (error) {
+    if (isAbortError(error, params.signal)) {
+      throw error;
+    }
     console.error('[classifyUserIntent] LLM intent classification failed:', error);
     return null;
   }
@@ -532,7 +534,9 @@ export async function generateAssistantResponse(params: {
   toolResult: ToolExecutionResult | null;
   preferences: UserPreferences;
   history: ConversationTurn[];
+  signal?: AbortSignal;
 }) {
+  throwIfAborted(params.signal);
   const client = getOpenAiClient();
   if (!client) return buildFallbackResponse(params);
 
@@ -588,10 +592,13 @@ export async function generateAssistantResponse(params: {
     const response = await client.chat.completions.create({
       model: getLlmBaseModel(),
       messages,
-    });
+    }, { signal: params.signal });
 
     return response.choices[0]?.message?.content || buildFallbackResponse(params);
   } catch (error) {
+    if (isAbortError(error, params.signal)) {
+      throw error;
+    }
     console.error('[generateAssistantResponse] LLM response generation failed:', error);
     return buildFallbackResponse(params);
   }
@@ -634,7 +641,9 @@ export async function generateParallelResponse(params: {
   errors?: Array<{ tool: IntentTool; error: string }>;
   preferences: UserPreferences;
   history: ConversationTurn[];
+  signal?: AbortSignal;
 }): Promise<string> {
+  throwIfAborted(params.signal);
   const errors = params.errors ?? [];
 
   if (params.toolResults.length === 0) {
@@ -707,12 +716,15 @@ export async function generateParallelResponse(params: {
     const response = await client.chat.completions.create({
       model: getLlmBaseModel(),
       messages,
-    });
+    }, { signal: params.signal });
 
     return (
       response.choices[0]?.message?.content || buildParallelFallbackResponse(params.toolResults, errors)
     );
   } catch (error) {
+    if (isAbortError(error, params.signal)) {
+      throw error;
+    }
     console.error('[generateParallelResponse] LLM response generation failed:', error);
     return buildParallelFallbackResponse(params.toolResults, errors);
   }
@@ -734,7 +746,9 @@ export async function generateRiskAssessment(params: {
   financialData: FinancialData;
   technicalData: TechnicalData;
   newsData: NewsData;
+  signal?: AbortSignal;
 }): Promise<RiskAssessmentData> {
+  throwIfAborted(params.signal);
   const { ticker, currentPrice, normalizedScores, financialData, technicalData, newsData } = params;
   const client = getOpenAiClient();
 
@@ -812,7 +826,7 @@ export async function generateRiskAssessment(params: {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
       ],
-    });
+    }, { signal: params.signal });
 
     const text = (response.choices[0]?.message?.content || '').trim().replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(text) as RiskAssessmentData;
@@ -820,6 +834,9 @@ export async function generateRiskAssessment(params: {
     parsed.ticker = ticker;
     return parsed;
   } catch (error) {
+    if (isAbortError(error, params.signal)) {
+      throw error;
+    }
     console.error('[generateRiskAssessment] LLM call failed:', error);
     return fallback;
   }
@@ -828,7 +845,8 @@ export async function generateRiskAssessment(params: {
 /**
  * Simple LLM call for text generation
  */
-export async function callLLM(params: { messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>; temperature?: number }): Promise<{ content: string }> {
+export async function callLLM(params: { messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>; temperature?: number; signal?: AbortSignal }): Promise<{ content: string }> {
+  throwIfAborted(params.signal);
   const client = getOpenAiClient();
   if (!client) throw new Error('LLM client not available');
 
@@ -836,7 +854,7 @@ export async function callLLM(params: { messages: Array<{ role: 'user' | 'assist
     model: getLlmBaseModel(),
     messages: params.messages,
     temperature: params.temperature || 0.7,
-  });
+  }, { signal: params.signal });
 
   return { content: response.choices[0]?.message?.content || '' };
 }
@@ -857,7 +875,9 @@ export async function generateInvestmentDecision(params: {
   financialData: FinancialData;
   technicalData: TechnicalData;
   newsData: NewsData;
+  signal?: AbortSignal;
 }): Promise<DecisionData> {
+  throwIfAborted(params.signal);
   const { ticker, currentPrice, normalizedScores, riskAssessment, financialData, technicalData, newsData } = params;
   const client = getOpenAiClient();
 
@@ -938,7 +958,7 @@ export async function generateInvestmentDecision(params: {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
       ],
-    });
+    }, { signal: params.signal });
 
     const text = (response.choices[0]?.message?.content || '').trim().replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(text) as DecisionData;
@@ -953,6 +973,9 @@ export async function generateInvestmentDecision(params: {
     parsed.riskAssessment = riskAssessment;
     return parsed;
   } catch (error) {
+    if (isAbortError(error, params.signal)) {
+      throw error;
+    }
     console.error('[generateInvestmentDecision] LLM call failed:', error);
     return { ...fallback, riskAssessment };
   }

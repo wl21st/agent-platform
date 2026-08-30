@@ -1,4 +1,5 @@
 import { WEBPAGE_SUMMARIZE_AGENT } from '@/lib/agent-chat';
+import { isAbortError, withTimeoutSignal } from '@/lib/cancellation';
 import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/toolAgents';
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -115,6 +116,7 @@ export async function runWebpageSummarizeAgent(
     };
   }
 
+  const timeoutSignal = withTimeoutSignal(context.signal, 15_000);
   try {
     const response = await fetch(url, {
       method: 'GET',
@@ -125,7 +127,7 @@ export async function runWebpageSummarizeAgent(
         'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
       },
       redirect: 'follow',
-      signal: AbortSignal.timeout(15_000),
+      signal: timeoutSignal.signal,
     });
 
     if (!response.ok) {
@@ -134,6 +136,7 @@ export async function runWebpageSummarizeAgent(
 
     const contentType = response.headers.get('content-type') || '';
     if (!contentType.includes('text/html') && !contentType.includes('text/plain') && !contentType.includes('application/xhtml')) {
+      timeoutSignal.cleanup();
       return {
         agent: WEBPAGE_SUMMARIZE_AGENT,
         summary: `The URL returned non-HTML content (${contentType}).`,
@@ -149,6 +152,7 @@ export async function runWebpageSummarizeAgent(
     }
 
     const html = await response.text();
+    timeoutSignal.cleanup();
     const title = extractTitle(html) || 'Untitled Page';
     const metaDescription = extractMetaDescription(html);
     const bodyText = htmlToPlainText(html);
@@ -194,6 +198,10 @@ export async function runWebpageSummarizeAgent(
       },
     };
   } catch (error) {
+    timeoutSignal.cleanup();
+    if (isAbortError(error, context.signal)) {
+      throw error;
+    }
     const message = error instanceof Error ? error.message : String(error);
 
     return {

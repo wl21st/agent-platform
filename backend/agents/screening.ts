@@ -1,4 +1,5 @@
 import YahooFinance from 'yahoo-finance2';
+import { throwIfAborted } from '@/lib/cancellation';
 
 const yahooFinance = new YahooFinance();
 const SCREENING_PROGRESS_BATCH_SIZE = 50;
@@ -67,7 +68,8 @@ function calculateAtr14(bars: ChartBar[], closes: number[]): number {
   return average(trueRanges);
 }
 
-async function fetchScreeningBars(ticker: string): Promise<ChartBar[]> {
+async function fetchScreeningBars(ticker: string, signal?: AbortSignal): Promise<ChartBar[]> {
+  throwIfAborted(signal);
   const period1 = new Date();
   period1.setMonth(period1.getMonth() - 18);
 
@@ -77,6 +79,7 @@ async function fetchScreeningBars(ticker: string): Promise<ChartBar[]> {
   }, {
     validateResult: false,
   }) as unknown as ChartResult;
+  throwIfAborted(signal);
 
   return (chartResult.quotes ?? [])
     .map((quote) => {
@@ -278,7 +281,7 @@ function evaluateSetups(ticker: string, bars: ChartBar[], setupTypes: SetupType[
   });
 }
 
-export async function screenSetups(tickers: string[], setupTypes: SetupType[]): Promise<ScreenHit[]> {
+export async function screenSetups(tickers: string[], setupTypes: SetupType[], signal?: AbortSignal): Promise<ScreenHit[]> {
   const results: ScreenHit[] = [];
   const startedAt = Date.now();
   let batchStartedAt = startedAt;
@@ -286,10 +289,12 @@ export async function screenSetups(tickers: string[], setupTypes: SetupType[]): 
   console.info(`[screening] Started ${setupTypes.join('/')} screening for ${tickers.length} tickers`);
 
   for (const [index, ticker] of tickers.entries()) {
+    throwIfAborted(signal);
     try {
-      const bars = await fetchScreeningBars(ticker);
+      const bars = await fetchScreeningBars(ticker, signal);
       results.push(...evaluateSetups(ticker, bars, setupTypes));
     } catch (error) {
+      if (signal?.aborted) throw error;
       console.error(`[screening] Error processing ${ticker}:`, error);
     }
 
@@ -312,15 +317,15 @@ export async function screenSetups(tickers: string[], setupTypes: SetupType[]): 
 /**
  * Screen stocks for uptrend: close > sma20 > sma50 > sma200, volume > 1.5 * volAvg20, close <= 1.15 * sma50, >= 200 bars
  */
-export async function screenTrend(tickers: string[]): Promise<ScreenHit[]> {
-  return screenSetups(tickers, ['trend']);
+export async function screenTrend(tickers: string[], signal?: AbortSignal): Promise<ScreenHit[]> {
+  return screenSetups(tickers, ['trend'], signal);
 }
 
 /**
  * Screen stocks for pullback: close > sma200, sma50 > sma200, close < sma20, close > sma50 * 0.97, volume < 1.5 * volAvg20, >= 200 bars
  */
-export async function screenPullback(tickers: string[]): Promise<ScreenHit[]> {
-  return screenSetups(tickers, ['pullback']);
+export async function screenPullback(tickers: string[], signal?: AbortSignal): Promise<ScreenHit[]> {
+  return screenSetups(tickers, ['pullback'], signal);
 }
 
 /**
@@ -404,8 +409,8 @@ export function screenPullbackQuoteCandidates(inputs: PullbackQuoteCandidateInpu
 /**
  * Screen stocks for momentum: gap > 5%, close > open, volume > 2 * volAvg20, close > sma50, 5-day return <= 30%, >= 60 bars
  */
-export async function screenMomentum(tickers: string[]): Promise<ScreenHit[]> {
-  return screenSetups(tickers, ['momentum']);
+export async function screenMomentum(tickers: string[], signal?: AbortSignal): Promise<ScreenHit[]> {
+  return screenSetups(tickers, ['momentum'], signal);
 }
 
 // If run as a script, accept method and tickers as arguments

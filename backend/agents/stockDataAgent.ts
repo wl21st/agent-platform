@@ -2,6 +2,7 @@ import YahooFinance from 'yahoo-finance2';
 
 import { STOCK_DATA_AGENT } from '@/lib/agent-chat';
 import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/toolAgents';
+import { isAbortError, throwIfAborted } from '@/lib/cancellation';
 import { FinancialData } from '@/lib/stockAnalysisInterfaces';
 
 const yahooFinance = new YahooFinance();
@@ -223,7 +224,8 @@ export function extractTickerSymbol(input: string, extractedTicker?: string): st
  * Core: fetch financial data via fundamentalsTimeSeries
  * ─────────────────────────────────────────────────────────────────────────── */
 
-async function fetchFinancialTimeSeries(ticker: string) {
+async function fetchFinancialTimeSeries(ticker: string, signal?: AbortSignal) {
+  throwIfAborted(signal);
   const fiveYearsAgo = new Date();
   fiveYearsAgo.setFullYear(fiveYearsAgo.getFullYear() - 5);
 
@@ -240,6 +242,7 @@ async function fetchFinancialTimeSeries(ticker: string) {
     }) as Promise<FTSRow[]>,
     yahooFinance.quoteSummary(ticker, { modules: ['price'] }).catch(() => null),
   ]);
+  throwIfAborted(signal);
 
   return {
     annual: annualData,
@@ -604,6 +607,7 @@ function buildFinancialReport(
 
 export async function runStockDataAgent(context: ToolExecutionContext): Promise<ToolExecutionResult> {
   const { input } = context;
+  throwIfAborted(context.signal);
   const ticker = extractTickerSymbol(input, context.extractedTicker);
 
   if (!ticker) {
@@ -622,7 +626,7 @@ export async function runStockDataAgent(context: ToolExecutionContext): Promise<
   }
 
   try {
-    const { annual, quarterly, price } = await fetchFinancialTimeSeries(ticker);
+    const { annual, quarterly, price } = await fetchFinancialTimeSeries(ticker, context.signal);
 
     if (annual.length === 0 && quarterly.length === 0) {
       return {
@@ -661,6 +665,9 @@ export async function runStockDataAgent(context: ToolExecutionContext): Promise<
       },
     };
   } catch (error) {
+    if (isAbortError(error, context.signal)) {
+      throw error;
+    }
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error(`[stockDataAgent] Failed to fetch data for ${ticker}:`, errMsg);
 

@@ -10,6 +10,7 @@ export type ToolExecutionContext = {
     lastUsedAgent?: string;
   };
   extractedSearchQuery?: string;
+  signal?: AbortSignal;
 };
 
 export interface ToolExecutionResult {

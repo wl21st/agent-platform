@@ -61,6 +61,7 @@ import {
   getOrCreateSession,
   updatePreferences,
 } from '@backend/memory/sessionStore';
+import { abortableDelay, throwIfAborted } from '@/lib/cancellation';
 
 type SelectedToolRoute = ToolRoute | 'none';
 
@@ -112,6 +113,10 @@ const OrchestratorState = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => ORCHESTRATOR_AGENT,
   }),
+  signal: Annotation<AbortSignal | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
 });
 
 type OrchestratorStateType = typeof OrchestratorState.State;
@@ -120,8 +125,8 @@ type OrchestratorStateType = typeof OrchestratorState.State;
  * Helpers
  * ─────────────────────────────────────────────────────────────────────── */
 
-function pause(milliseconds: number) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function pause(milliseconds: number, signal?: AbortSignal) {
+  return abortableDelay(milliseconds, signal);
 }
 
 /**
@@ -131,6 +136,7 @@ function pause(milliseconds: number) {
  */
 async function* yieldAsCompleted<T>(
   promises: Array<Promise<T>>,
+  signal?: AbortSignal,
 ): AsyncGenerator<{ index: number; result: PromiseSettledResult<T> }> {
   type Marker = { i: number; r: PromiseSettledResult<T> };
   const markers: Array<Promise<Marker>> = promises.map((p, i) =>
@@ -142,12 +148,50 @@ async function* yieldAsCompleted<T>(
 
   const settled = new Set<number>();
   while (settled.size < markers.length) {
+    throwIfAborted(signal);
     const pending = markers.filter((_, i) => !settled.has(i));
-    const { i, r } = await Promise.race(pending);
+    const { i, r } = await raceWithAbort(Promise.race(pending), signal);
+    throwIfAborted(signal);
     if (settled.has(i)) continue;
     settled.add(i);
     yield { index: i, result: r };
   }
+}
+
+function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+
+  throwIfAborted(signal);
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = () => {
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        finish(() => reject(error));
+      }
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+  });
 }
 
 function markTask(tasks: TaskStatus[], taskId: string, status: TaskStatus['status']) {
@@ -263,11 +307,13 @@ function derivePreferenceUpdates(
  * ─────────────────────────────────────────────────────────────────────── */
 
 async function intentParserNode(state: OrchestratorStateType) {
+  throwIfAborted(state.signal);
   // Try LLM-based intent classification first
   const llmIntent = await classifyUserIntent({
     input: state.input,
     history: state.history,
     preferences: state.preferences,
+    signal: state.signal,
   });
 
   if (llmIntent) {
@@ -309,6 +355,7 @@ async function intentParserNode(state: OrchestratorStateType) {
  * ─────────────────────────────────────────────────────────────────────── */
 
 async function executeToolNode(state: OrchestratorStateType) {
+  throwIfAborted(state.signal);
   if (state.selectedTool === 'none') {
     return {
       toolResult: null,
@@ -328,6 +375,7 @@ async function executeToolNode(state: OrchestratorStateType) {
     extractedUrl: state.intent.url || undefined,
     extractedTicker: state.intent.ticker || undefined,
     extractedNewsUrls: state.intent.newsUrls || undefined,
+    signal: state.signal,
   });
 
   return {
@@ -346,11 +394,13 @@ async function executeToolNode(state: OrchestratorStateType) {
  * ─────────────────────────────────────────────────────────────────────── */
 
 async function responseGeneratorNode(state: OrchestratorStateType) {
+  throwIfAborted(state.signal);
   const response = await generateAssistantResponse({
     input: state.input,
     toolResult: state.toolResult,
     preferences: state.preferences,
     history: state.history,
+    signal: state.signal,
   });
 
   return {
@@ -421,8 +471,9 @@ async function* streamNewsSummaryWorkflow(params: {
   intent: IntentClassification;
   preferences: UserPreferences;
   history: ConversationTurn[];
+  signal?: AbortSignal;
 }): AsyncGenerator<StreamEvent> {
-  const { sessionId, input, intent, preferences, history } = params;
+  const { sessionId, input, intent, preferences, history, signal } = params;
 
   /* ── Step 1: Build initial task list ────────────────────────────────── */
   let tasks: TaskStatus[] = [
@@ -452,6 +503,7 @@ async function* streamNewsSummaryWorkflow(params: {
     },
   ];
 
+  throwIfAborted(signal);
   yield { type: 'tasks', tasks };
 
   /* ── Step 2: Run News Scrape Agent ────────────────────────────── */
@@ -459,9 +511,12 @@ async function* streamNewsSummaryWorkflow(params: {
     input,
     preferences,
     extractedTicker: intent.ticker || undefined,
+    signal,
   };
 
+  throwIfAborted(signal);
   const scrapeResult = await runNewsScrapeAgent(toolContext);
+  throwIfAborted(signal);
 
   const initialNewsItems = scrapeResult.metadata.newsItems as Array<{title: string, url: string, publishedDate: string}> | undefined;
   tasks = markTask(tasks, 'news-scrape-tool', initialNewsItems?.length ? 'completed' : 'failed');
@@ -474,6 +529,7 @@ async function* streamNewsSummaryWorkflow(params: {
     agent: NEWS_SCRAPE_AGENT,
     status: 'done',
   });
+  throwIfAborted(signal);
   appendMessage(sessionId, scrapeMessage);
   yield { type: 'agent-done', message: scrapeMessage };
 
@@ -483,6 +539,7 @@ async function* streamNewsSummaryWorkflow(params: {
     tasks = markTask(tasks, 'compose-response', 'completed');
     yield { type: 'tasks', tasks };
 
+    throwIfAborted(signal);
     const updatedSession = updatePreferences(
       sessionId,
       derivePreferenceUpdates(input, 'news-scrape', scrapeResult, preferences),
@@ -493,11 +550,13 @@ async function* streamNewsSummaryWorkflow(params: {
       content: 'No news articles were found for the specified stock, so the news summary analysis could not be performed. Please try a different ticker symbol or check back later.',
       agent: ORCHESTRATOR_AGENT,
     });
+    throwIfAborted(signal);
     appendMessage(sessionId, failMessage);
 
     for (const delta of chunkText(failMessage.content)) {
+      throwIfAborted(signal);
       yield { type: 'message', delta, agent: ORCHESTRATOR_AGENT };
-      await pause(35);
+      await pause(35, signal);
     }
 
     yield {
@@ -519,7 +578,9 @@ async function* streamNewsSummaryWorkflow(params: {
   const summaryResult = await runNewsSummaryAgent({
     ...toolContext,
     extractedNewsUrls,
+    signal,
   });
+  throwIfAborted(signal);
 
   tasks = markTask(tasks, 'news-summary-sub', 'completed');
   yield { type: 'tasks', tasks };
@@ -534,7 +595,9 @@ async function* streamNewsSummaryWorkflow(params: {
     toolResult: summaryResult,
     preferences,
     history,
+    signal,
   });
+  throwIfAborted(signal);
 
   tasks = markTask(tasks, 'compose-response', 'completed');
   yield { type: 'tasks', tasks };
@@ -547,6 +610,7 @@ async function* streamNewsSummaryWorkflow(params: {
       ...scrapeResult.metadata,
     },
   };
+  throwIfAborted(signal);
   const updatedSession = updatePreferences(
     sessionId,
     derivePreferenceUpdates(input, 'news-summary', combinedToolResult, preferences),
@@ -560,10 +624,12 @@ async function* streamNewsSummaryWorkflow(params: {
   });
 
   for (const delta of chunkText(response)) {
+    throwIfAborted(signal);
     yield { type: 'message', delta, agent: NEWS_SUMMARY_AGENT };
-    await pause(35);
+    await pause(35, signal);
   }
 
+  throwIfAborted(signal);
   appendMessage(sessionId, assistantMessage);
 
   yield {
@@ -592,8 +658,9 @@ async function* streamUsStockScanWorkflow(params: {
   sessionId: string;
   input: string;
   preferences: UserPreferences;
+  signal?: AbortSignal;
 }): AsyncGenerator<StreamEvent> {
-  const { sessionId, input, preferences } = params;
+  const { sessionId, input, preferences, signal } = params;
 
   let tasks: TaskStatus[] = [
     {
@@ -622,14 +689,18 @@ async function* streamUsStockScanWorkflow(params: {
     },
   ];
 
+  throwIfAborted(signal);
   yield { type: 'tasks', tasks };
 
   console.info(`[stock-scan] Starting workflow for input: ${input}`);
 
+  throwIfAborted(signal);
   const liquidityResult = await runLiquidityAgent({
     input,
     preferences,
+    signal,
   });
+  throwIfAborted(signal);
 
   const liquidityUniverse = liquidityResult.metadata.universe as { label?: string; tickers?: string[] } | undefined;
   const universeLabel = typeof liquidityUniverse?.label === 'string'
@@ -662,6 +733,7 @@ async function* streamUsStockScanWorkflow(params: {
     agent: LIQUIDITY_AGENT,
     status: 'done',
   });
+  throwIfAborted(signal);
   appendMessage(sessionId, liquidityMessage);
   yield { type: 'agent-done', message: liquidityMessage };
 
@@ -684,13 +756,16 @@ async function* streamUsStockScanWorkflow(params: {
       content: noLiquidityMarkdown,
       agent: ORCHESTRATOR_AGENT,
     });
+    throwIfAborted(signal);
     appendMessage(sessionId, noLiquidityMessage);
 
     for (const delta of chunkText(noLiquidityMarkdown)) {
+      throwIfAborted(signal);
       yield { type: 'message', delta, agent: ORCHESTRATOR_AGENT };
-      await pause(35);
+      await pause(35, signal);
     }
 
+    throwIfAborted(signal);
     const updatedSession = updatePreferences(sessionId, { lastUsedAgent: LIQUIDITY_AGENT.name });
     yield { type: 'done', message: noLiquidityMessage, tasks, preferences: updatedSession.preferences };
     return;
@@ -716,8 +791,9 @@ async function* streamUsStockScanWorkflow(params: {
   // Stage 2: full pullback rule on chart data, but only for Stage-1 survivors.
   const stage2Started = Date.now();
   const screenHits: ScreenHit[] = stage1.candidates.length > 0
-    ? await screenPullback(stage1.candidates)
+    ? await screenPullback(stage1.candidates, signal)
     : [];
+  throwIfAborted(signal);
   console.info(
     `[stock-scan] Pullback Stage 2 (chart confirmation): ${screenHits.length} hits from ${stage1.candidates.length} Stage-1 candidates in ${Date.now() - stage2Started}ms`,
   );
@@ -738,6 +814,7 @@ async function* streamUsStockScanWorkflow(params: {
     agent: SCREEN_HIT_AGENT,
     status: 'done',
   });
+  throwIfAborted(signal);
   appendMessage(sessionId, screenMessage);
   yield { type: 'agent-done', message: screenMessage };
 
@@ -759,13 +836,16 @@ async function* streamUsStockScanWorkflow(params: {
       content: noHitsMarkdown,
       agent: ORCHESTRATOR_AGENT,
     });
+    throwIfAborted(signal);
     appendMessage(sessionId, noHitsMessage);
 
     for (const delta of chunkText(noHitsMarkdown)) {
+      throwIfAborted(signal);
       yield { type: 'message', delta, agent: ORCHESTRATOR_AGENT };
-      await pause(35);
+      await pause(35, signal);
     }
 
+    throwIfAborted(signal);
     const updatedSession = updatePreferences(sessionId, { lastUsedAgent: SCREEN_HIT_AGENT.name });
     yield { type: 'done', message: noHitsMessage, tasks, preferences: updatedSession.preferences };
     return;
@@ -777,7 +857,9 @@ async function* streamUsStockScanWorkflow(params: {
   const finalResult = await runFinalSelectAgent({
     input: JSON.stringify(screenHits),
     preferences,
+    signal,
   });
+  throwIfAborted(signal);
 
   console.info('[stock-scan] Final Select Agent completed');
 
@@ -802,12 +884,15 @@ async function* streamUsStockScanWorkflow(params: {
   });
 
   for (const delta of chunkText(finalMarkdown)) {
-    yield { type: 'message', delta, agent: FINAL_SELECT_AGENT };
-    await pause(35);
+    throwIfAborted(signal);
+      yield { type: 'message', delta, agent: FINAL_SELECT_AGENT };
+    await pause(35, signal);
   }
 
+  throwIfAborted(signal);
   appendMessage(sessionId, finalMessage);
 
+  throwIfAborted(signal);
   const updatedSession = updatePreferences(sessionId, { lastUsedAgent: FINAL_SELECT_AGENT.name });
 
   yield {
@@ -834,8 +919,9 @@ async function* streamIngredientsScrapeWorkflow(params: {
   intent: IntentClassification;
   preferences: UserPreferences;
   history: ConversationTurn[];
+  signal?: AbortSignal;
 }): AsyncGenerator<StreamEvent> {
-  const { sessionId, input, intent, preferences, history } = params;
+  const { sessionId, input, intent, preferences, history, signal } = params;
 
   /* ── Step 1: Build initial task list ────────────────────────────────── */
   let tasks: TaskStatus[] = [
@@ -865,6 +951,7 @@ async function* streamIngredientsScrapeWorkflow(params: {
     },
   ];
 
+  throwIfAborted(signal);
   yield { type: 'tasks', tasks };
 
   /* ── Step 2: Run Ingredients Scrape Agent ────────────────────────────── */
@@ -872,9 +959,12 @@ async function* streamIngredientsScrapeWorkflow(params: {
     input,
     preferences,
     extractedUrl: intent.url || undefined,
+    signal,
   };
 
+  throwIfAborted(signal);
   const scrapeResult = await scrapeIngredientsOnly(toolContext);
+  throwIfAborted(signal);
 
   tasks = markTask(tasks, 'ingredients-scrape-tool', scrapeResult.ingredientText ? 'completed' : 'failed');
   yield { type: 'tasks', tasks };
@@ -886,6 +976,7 @@ async function* streamIngredientsScrapeWorkflow(params: {
     agent: INGREDIENTS_SCRAPE_AGENT,
     status: 'done',
   });
+  throwIfAborted(signal);
   appendMessage(sessionId, scrapeMessage);
   yield { type: 'agent-done', message: scrapeMessage };
 
@@ -895,6 +986,7 @@ async function* streamIngredientsScrapeWorkflow(params: {
     tasks = markTask(tasks, 'compose-response', 'completed');
     yield { type: 'tasks', tasks };
 
+    throwIfAborted(signal);
     const updatedSession = updatePreferences(
       sessionId,
       derivePreferenceUpdates(input, 'ingredients-scrape', scrapeResult.toolResult, preferences),
@@ -905,11 +997,13 @@ async function* streamIngredientsScrapeWorkflow(params: {
       content: 'No ingredients were found on the page, so the safety analysis could not be performed. Please try a different URL or provide the ingredients manually.',
       agent: ORCHESTRATOR_AGENT,
     });
+    throwIfAborted(signal);
     appendMessage(sessionId, failMessage);
 
     for (const delta of chunkText(failMessage.content)) {
+      throwIfAborted(signal);
       yield { type: 'message', delta, agent: ORCHESTRATOR_AGENT };
-      await pause(35);
+      await pause(35, signal);
     }
 
     yield {
@@ -929,6 +1023,7 @@ async function* streamIngredientsScrapeWorkflow(params: {
     ...toolContext,
     input: scrapeResult.ingredientText,
   });
+  throwIfAborted(signal);
 
   tasks = markTask(tasks, 'cosmetic-safe-check-sub', 'completed');
   yield { type: 'tasks', tasks };
@@ -944,13 +1039,16 @@ async function* streamIngredientsScrapeWorkflow(params: {
     toolResult: safetyResult,
     preferences,
     history,
+    signal,
   });
+  throwIfAborted(signal);
 
   tasks = markTask(tasks, 'compose-response', 'completed');
   yield { type: 'tasks', tasks };
 
   /* ── Step 5: Update preferences ─────────────────────────────────────── */
   const combinedToolResult = buildCombinedScrapeAndSafetyResult(scrapeResult, safetyResult);
+  throwIfAborted(signal);
   const updatedSession = updatePreferences(
     sessionId,
     derivePreferenceUpdates(input, 'ingredients-scrape', combinedToolResult, preferences),
@@ -964,10 +1062,12 @@ async function* streamIngredientsScrapeWorkflow(params: {
   });
 
   for (const delta of chunkText(response)) {
+    throwIfAborted(signal);
     yield { type: 'message', delta, agent: COSMETIC_SAFE_CHECK_AGENT };
-    await pause(35);
+    await pause(35, signal);
   }
 
+  throwIfAborted(signal);
   appendMessage(sessionId, assistantMessage);
 
   yield {
@@ -1003,8 +1103,9 @@ async function* streamParallelWorkflow(params: {
   intents: SingleIntent[];
   preferences: UserPreferences;
   history: ConversationTurn[];
+  signal?: AbortSignal;
 }): AsyncGenerator<StreamEvent> {
-  const { sessionId, input, intents, preferences, history } = params;
+  const { sessionId, input, intents, preferences, history, signal } = params;
 
   /* ── Step 1: Build initial task list (intent + N parallel tools + compose) ── */
   const toolTaskIds: string[] = intents.map(
@@ -1035,6 +1136,7 @@ async function* streamParallelWorkflow(params: {
     },
   ];
 
+  throwIfAborted(signal);
   yield { type: 'tasks', tasks };
 
   /* ── Step 2: Fire all tool executions CONCURRENTLY via Promise.all ── */
@@ -1049,6 +1151,7 @@ async function* streamParallelWorkflow(params: {
       extractedUrl: sub.url || undefined,
       extractedTicker: sub.ticker || undefined,
       extractedNewsUrls: sub.newsUrls || undefined,
+      signal,
     });
   });
 
@@ -1066,7 +1169,7 @@ async function* streamParallelWorkflow(params: {
    * The final combined response from `generateParallelResponse` IS the
    * user-facing result for all tools in the parallel batch.
    * ─────────────────────────────────────────────────────────────────── */
-  for await (const { index, result } of yieldAsCompleted(executionPromises)) {
+  for await (const { index, result } of yieldAsCompleted(executionPromises, signal)) {
     const taskId = toolTaskIds[index];
     const sub = intents[index];
 
@@ -1100,7 +1203,9 @@ async function* streamParallelWorkflow(params: {
     errors,
     preferences,
     history,
+    signal,
   });
+  throwIfAborted(signal);
 
   tasks = markTask(tasks, 'compose-response', 'completed');
   yield { type: 'tasks', tasks };
@@ -1118,6 +1223,7 @@ async function* streamParallelWorkflow(params: {
       result,
       currentPrefs,
     );
+    throwIfAborted(signal);
     const session = updatePreferences(sessionId, updates);
     currentPrefs = session.preferences;
   }
@@ -1130,10 +1236,12 @@ async function* streamParallelWorkflow(params: {
   });
 
   for (const delta of chunkText(combinedResponse)) {
+    throwIfAborted(signal);
     yield { type: 'message', delta, agent: ORCHESTRATOR_AGENT };
-    await pause(35);
+    await pause(35, signal);
   }
 
+  throwIfAborted(signal);
   appendMessage(sessionId, assistantMessage);
 
   yield {
@@ -1162,8 +1270,9 @@ async function* streamStockAnalysisWorkflow(params: {
   intent: IntentClassification;
   preferences: UserPreferences;
   history: ConversationTurn[];
+  signal?: AbortSignal;
 }): AsyncGenerator<StreamEvent> {
-  const { sessionId, input, intent, preferences, history } = params;
+  const { sessionId, input, intent, preferences, history, signal } = params;
 
   const ticker = intent.ticker || '';
 
@@ -1207,20 +1316,26 @@ async function* streamStockAnalysisWorkflow(params: {
     },
   ];
 
+  throwIfAborted(signal);
   yield { type: 'tasks', tasks };
 
   const toolContext = {
     input,
     preferences,
     extractedTicker: intent.ticker || undefined,
+    signal,
   };
 
   /* ── Step 2: Run fundamentals + news + technical IN PARALLEL ─────────── */
-  const [fundamentalsResult, newsResult, technicalResult] = await Promise.allSettled([
-    runStockDataAgent(toolContext),
-    runNewsScrapeAgent(toolContext),
-    runTechnicalAnalysisAgent(toolContext),
-  ]);
+  const [fundamentalsResult, newsResult, technicalResult] = await raceWithAbort(
+    Promise.allSettled([
+      runStockDataAgent(toolContext),
+      runNewsScrapeAgent(toolContext),
+      runTechnicalAnalysisAgent(toolContext),
+    ]),
+    signal,
+  );
+  throwIfAborted(signal);
 
   /* ── Step 3: Update task statuses and emit bubbles ───────────────────── */
   const fundamentals = fundamentalsResult.status === 'fulfilled' ? fundamentalsResult.value : null;
@@ -1235,16 +1350,19 @@ async function* streamStockAnalysisWorkflow(params: {
   // Emit each result as its own chat bubble
   if (fundamentals) {
     const msg = createMessage({ role: 'assistant', content: fundamentals.markdown, agent: STOCK_DATA_AGENT, status: 'done' });
+    throwIfAborted(signal);
     appendMessage(sessionId, msg);
     yield { type: 'agent-done', message: msg };
   }
   if (news) {
     const msg = createMessage({ role: 'assistant', content: news.markdown, agent: NEWS_SCRAPE_AGENT, status: 'done' });
+    throwIfAborted(signal);
     appendMessage(sessionId, msg);
     yield { type: 'agent-done', message: msg };
   }
   if (technical) {
     const msg = createMessage({ role: 'assistant', content: technical.markdown, agent: TECHNICAL_ANALYSIS_AGENT, status: 'done' });
+    throwIfAborted(signal);
     appendMessage(sessionId, msg);
     yield { type: 'agent-done', message: msg };
   }
@@ -1271,14 +1389,16 @@ async function* streamStockAnalysisWorkflow(params: {
       ].join('\n'),
       agent: ORCHESTRATOR_AGENT,
     });
+    throwIfAborted(signal);
     appendMessage(sessionId, errMessage);
     tasks = markTask(tasks, 'risk-assessment', 'failed');
     tasks = markTask(tasks, 'investment-decision', 'failed');
     yield { type: 'tasks', tasks };
 
     for (const delta of chunkText(errMessage.content)) {
+      throwIfAborted(signal);
       yield { type: 'message', delta, agent: ORCHESTRATOR_AGENT };
-      await pause(35);
+      await pause(35, signal);
     }
     yield { type: 'done', message: errMessage, tasks, preferences };
     return;
@@ -1303,13 +1423,16 @@ async function* streamStockAnalysisWorkflow(params: {
     newsData,
     technicalData,
     normalizedScores,
+    signal,
   });
+  throwIfAborted(signal);
 
   tasks = markTask(tasks, 'risk-assessment', 'completed');
   yield { type: 'tasks', tasks };
 
   // Emit risk report as its own bubble
   const riskMsg = createMessage({ role: 'assistant', content: riskMarkdown, agent: riskAgent, status: 'done' });
+  throwIfAborted(signal);
   appendMessage(sessionId, riskMsg);
   yield { type: 'agent-done', message: riskMsg };
 
@@ -1325,12 +1448,15 @@ async function* streamStockAnalysisWorkflow(params: {
     financialData,
     newsData,
     technicalData,
+    signal,
   });
+  throwIfAborted(signal);
 
   tasks = markTask(tasks, 'investment-decision', 'completed');
   yield { type: 'tasks', tasks };
 
   /* ── Step 8: Update session preferences ─────────────────────────────── */
+  throwIfAborted(signal);
   const updatedSession = updatePreferences(sessionId, {
     lastUsedAgent: STOCK_DECISION_AGENT.name,
   });
@@ -1343,10 +1469,12 @@ async function* streamStockAnalysisWorkflow(params: {
   });
 
   for (const delta of chunkText(decisionMarkdown)) {
+    throwIfAborted(signal);
     yield { type: 'message', delta, agent: decisionAgent };
-    await pause(35);
+    await pause(35, signal);
   }
 
+  throwIfAborted(signal);
   appendMessage(sessionId, decisionMessage);
 
   yield {
@@ -1369,10 +1497,13 @@ async function* streamStockAnalysisWorkflow(params: {
 export async function* streamOrchestratorSession(params: {
   sessionId?: string;
   input: string;
+  signal?: AbortSignal;
 }): AsyncGenerator<StreamEvent> {
+  throwIfAborted(params.signal);
   const sessionId = params.sessionId || crypto.randomUUID();
   const session = getOrCreateSession(sessionId);
 
+  throwIfAborted(params.signal);
   const sessionWithUserMessage = appendMessage(
     sessionId,
     createMessage({
@@ -1381,6 +1512,7 @@ export async function* streamOrchestratorSession(params: {
     }),
   );
 
+  throwIfAborted(params.signal);
   yield { type: 'session', sessionId };
   yield {
     type: 'tasks',
@@ -1401,7 +1533,9 @@ export async function* streamOrchestratorSession(params: {
     input: params.input,
     history,
     preferences: session.preferences,
+    signal: params.signal,
   });
+  throwIfAborted(params.signal);
 
   const intent: IntentClassification = llmIntent || {
     tool: resolveToolRouteWithContext({
@@ -1422,6 +1556,7 @@ export async function* streamOrchestratorSession(params: {
       intents: intent.intents,
       preferences: session.preferences,
       history,
+      signal: params.signal,
     });
     return;
   }
@@ -1433,6 +1568,7 @@ export async function* streamOrchestratorSession(params: {
       intent,
       preferences: session.preferences,
       history,
+      signal: params.signal,
     });
     return;
   }
@@ -1444,6 +1580,7 @@ export async function* streamOrchestratorSession(params: {
       intent,
       preferences: session.preferences,
       history,
+      signal: params.signal,
     });
     return;
   }
@@ -1455,6 +1592,7 @@ export async function* streamOrchestratorSession(params: {
       intent,
       preferences: session.preferences,
       history,
+      signal: params.signal,
     });
     return;
   }
@@ -1464,6 +1602,7 @@ export async function* streamOrchestratorSession(params: {
       sessionId,
       input: params.input,
       preferences: session.preferences,
+      signal: params.signal,
     });
     return;
   }
@@ -1480,8 +1619,11 @@ export async function* streamOrchestratorSession(params: {
     toolResult: null,
     response: '',
     agent: ORCHESTRATOR_AGENT,
+    signal: params.signal,
   });
+  throwIfAborted(params.signal);
 
+  throwIfAborted(params.signal);
   const updatedSession = updatePreferences(
     sessionId,
     derivePreferenceUpdates(
@@ -1501,10 +1643,12 @@ export async function* streamOrchestratorSession(params: {
   });
 
   for (const delta of chunkText(result.response)) {
+    throwIfAborted(params.signal);
     yield { type: 'message', delta, agent: result.agent };
-    await pause(35);
+    await pause(35, params.signal);
   }
 
+  throwIfAborted(params.signal);
   appendMessage(sessionId, assistantMessage);
 
   yield {

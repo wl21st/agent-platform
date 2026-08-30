@@ -69,7 +69,7 @@ The project is a multi-agent AI platform featuring parallel agent execution, int
 - **Intent Resolution**: Queries are classified via `classifyUserIntent` (LLM-first) with regex fallback in `toolAgents.ts`. Supports multi-intent parallel execution where independent tasks run concurrently with `Promise.all()`.
 - **Environment Configuration**:
   - `LLM_API_KEY` - API key for OpenAI or OpenRouter
-  - `LLM_API_BASE_URL` (or legacy `LLM_API_URL`) - Defaults to `https://openrouter.ai/api/v1`
+  - `LLM_API_BASE_URL` - Defaults to `https://openrouter.ai/api/v1`
   - `LLM_BASE_MODEL` - Default: `openai/gpt-4.1-mini`
-  - `WEATHERAPI_API_KEY` - WeatherAPI service key (optional)
+  - `WEATHER_API_KEY` - WeatherAPI service key (optional)
   - `EXA_API_KEY` - Exa search API key (optional)

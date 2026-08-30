@@ -29,10 +29,10 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   agent?: AgentSummary;
-  status?: 'streaming' | 'done' | 'error';
+  status?: 'streaming' | 'done' | 'error' | 'cancelled';
 }
 
-export type TaskStatusValue = 'pending' | 'running' | 'completed' | 'failed';
+export type TaskStatusValue = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface TaskStatus {
   id: string;

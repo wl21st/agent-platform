@@ -4,6 +4,7 @@ import { TECHNICAL_ANALYSIS_AGENT } from '@/lib/agent-chat';
 import type { TechnicalData } from '@/lib/stockAnalysisInterfaces';
 import { extractTickerSymbol } from '@backend/agents/stockDataAgent';
 import type { ToolExecutionContext, ToolExecutionResult } from '@backend/agents/toolAgents';
+import { isAbortError, throwIfAborted } from '@/lib/cancellation';
 
 const yahooFinance = new YahooFinance();
 
@@ -402,6 +403,7 @@ function buildTechnicalReport(td: TechnicalData): string {
 
 export async function runTechnicalAnalysisAgent(context: ToolExecutionContext): Promise<ToolExecutionResult> {
   const { input } = context;
+  throwIfAborted(context.signal);
   const ticker = extractTickerSymbol(input, context.extractedTicker);
 
   if (!ticker) {
@@ -428,6 +430,7 @@ export async function runTechnicalAnalysisAgent(context: ToolExecutionContext): 
       period1: period1.toISOString().split('T')[0]!,
       interval: '1d',
     });
+    throwIfAborted(context.signal);
 
     const quotes = chartResult.quotes ?? [];
     if (quotes.length === 0) {
@@ -465,6 +468,9 @@ export async function runTechnicalAnalysisAgent(context: ToolExecutionContext): 
       },
     };
   } catch (error) {
+    if (isAbortError(error, context.signal)) {
+      throw error;
+    }
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error(`[technicalAnalysisAgent] Failed to fetch data for ${ticker}:`, errMsg);
     return {

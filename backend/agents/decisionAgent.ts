@@ -109,6 +109,7 @@ export async function runInvestmentDecision(params: {
   financialData: FinancialData;
   technicalData: TechnicalData;
   newsData: NewsData;
+  signal?: AbortSignal;
 }): Promise<{ decisionData: DecisionData; markdown: string; agent: typeof STOCK_DECISION_AGENT }> {
   const decisionData = await generateInvestmentDecision(params);
   const markdown = buildDecisionReport(decisionData);
